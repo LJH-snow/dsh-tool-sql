@@ -1,4 +1,5 @@
-import type { Driver, DbConfig, ColumnInfo, IndexInfo, DatabaseInfo, TableStat, ColumnMatch, ViewInfo, TableSize, SchemaInfo } from '../client.js'
+import type { Driver, DbConfig, ColumnInfo, IndexInfo, DatabaseInfo, TableStat, ColumnMatch, ViewInfo, TableSize, SchemaInfo, FunctionInfo, TriggerInfo, ForeignKeyInfo, SchemaDump } from '../client.js'
+import { assertSafeIdentifier } from '../client.js'
 
 export async function createMysqlDriver(config: DbConfig): Promise<Driver> {
   const mysql = await import('mysql2/promise')
@@ -11,6 +12,16 @@ export async function createMysqlDriver(config: DbConfig): Promise<Driver> {
     connectTimeout: config.connectTimeoutMs ?? 10_000,
     ssl: config.ssl ? {} : undefined,
   })
+
+  async function getSchemaFor(table: string): Promise<SchemaInfo> {
+    const [rows] = await conn.query('SHOW CREATE TABLE `' + table.replace(/`/g, '``') + '`')
+    const list = rows as Array<{ [key: string]: string }>
+    const row = list[0]
+    if (!row) throw new Error(`Table "${table}" not found.`)
+    const ddlKey = Object.keys(row).find(k => k.toLowerCase() === 'create table')
+    const ddl = ddlKey ? row[ddlKey] : ''
+    return { table, ddl, simplified: false }
+  }
 
   return {
     async query(sql) {
@@ -143,6 +154,93 @@ export async function createMysqlDriver(config: DbConfig): Promise<Driver> {
       const ddlKey = Object.keys(row).find(k => k.toLowerCase() === 'create table')
       const ddl = ddlKey ? row[ddlKey] : ''
       return { table, ddl, simplified: false }
+    },
+    async previewTable(table, limit) {
+      assertSafeIdentifier(table, 'table name')
+      const [rows, fields] = await conn.query('SELECT * FROM `' + table + '` LIMIT ?', [limit])
+      const columns = (fields as Array<{ name: string }> | undefined)?.map(f => f.name) ?? []
+      return { columns, rows: rows as Array<Record<string, unknown>> }
+    },
+    async listFunctions() {
+      const [rows] = await conn.query(
+        `SELECT ROUTINE_NAME AS name, ROUTINE_TYPE AS kind, DATA_TYPE AS return_type
+         FROM information_schema.routines
+         WHERE ROUTINE_SCHEMA = DATABASE()
+         ORDER BY ROUTINE_NAME`,
+      )
+      const list = rows as Array<{ name: string; kind: string; return_type: string | null }>
+      return list.map<FunctionInfo>(r => ({
+        name: r.name,
+        arguments: r.kind,
+        language: null,
+        returnType: r.return_type,
+      }))
+    },
+    async listTriggers() {
+      const [rows] = await conn.query(
+        `SELECT TRIGGER_NAME AS name, EVENT_OBJECT_TABLE AS table_name,
+                ACTION_TIMING AS timing, EVENT_MANIPULATION AS event, ACTION_STATEMENT AS statement
+         FROM information_schema.triggers
+         WHERE TRIGGER_SCHEMA = DATABASE()
+         ORDER BY EVENT_OBJECT_TABLE, TRIGGER_NAME`,
+      )
+      const list = rows as Array<{
+        name: string
+        table_name: string
+        timing: string
+        event: string
+        statement: string
+      }>
+      return list.map<TriggerInfo>(r => ({
+        name: r.name,
+        table: r.table_name,
+        timing: r.timing,
+        event: r.event,
+        definition: r.statement,
+      }))
+    },
+    async listForeignKeys() {
+      const [rows] = await conn.query(
+        `SELECT CONSTRAINT_NAME AS name, TABLE_NAME AS table_name, COLUMN_NAME AS column_name,
+                REFERENCED_TABLE_NAME AS referenced_table, REFERENCED_COLUMN_NAME AS referenced_column
+         FROM information_schema.key_column_usage
+         WHERE TABLE_SCHEMA = DATABASE() AND REFERENCED_TABLE_NAME IS NOT NULL
+         ORDER BY TABLE_NAME, ORDINAL_POSITION`,
+      )
+      const list = rows as Array<{
+        name: string
+        table_name: string
+        column_name: string
+        referenced_table: string
+        referenced_column: string
+      }>
+      return list.map<ForeignKeyInfo>(r => ({
+        name: r.name,
+        table: r.table_name,
+        column: r.column_name,
+        referencedTable: r.referenced_table,
+        referencedColumn: r.referenced_column,
+      }))
+    },
+    async schemaDump() {
+      const [rows] = await conn.query(
+        `SELECT TABLE_NAME AS name FROM information_schema.tables
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_NAME`,
+      )
+      const list = rows as Array<{ name: string }>
+      const tables = []
+      for (const row of list) {
+        const schema = await getSchemaFor(row.name)
+        tables.push({ table: row.name, ddl: schema.ddl, simplified: false })
+      }
+      const [viewRows] = await conn.query(
+        `SELECT TABLE_NAME AS name, VIEW_DEFINITION AS definition
+         FROM information_schema.views WHERE TABLE_SCHEMA = DATABASE() ORDER BY TABLE_NAME`,
+      )
+      const views = (viewRows as Array<{ name: string; definition: string | null }>)
+        .filter((v): v is { name: string; definition: string } => v.definition !== null)
+        .map(v => ({ name: v.name, definition: v.definition }))
+      return { tables, views } as SchemaDump
     },
     async close() {
       await conn.end()

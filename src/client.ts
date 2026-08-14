@@ -83,6 +83,34 @@ export interface PingResult {
   latencyMs: number
 }
 
+export interface FunctionInfo {
+  name: string
+  arguments: string
+  language: string | null
+  returnType: string | null
+}
+
+export interface TriggerInfo {
+  name: string
+  table: string
+  timing: string
+  event: string
+  definition: string | null
+}
+
+export interface ForeignKeyInfo {
+  name: string
+  table: string
+  column: string
+  referencedTable: string
+  referencedColumn: string
+}
+
+export interface SchemaDump {
+  tables: Array<{ table: string; ddl: string; simplified: boolean }>
+  views: Array<{ name: string; definition: string }>
+}
+
 /** SQL driver adapter; implementations live in drivers/* and are dynamically imported. */
 export interface Driver {
   query(sql: string, signal?: AbortSignal): Promise<{ columns: string[]; rows: Array<Record<string, unknown>> }>
@@ -95,7 +123,21 @@ export interface Driver {
   listViews(signal?: AbortSignal): Promise<ViewInfo[]>
   tableSize(table: string, signal?: AbortSignal): Promise<TableSize>
   getSchema(table: string, signal?: AbortSignal): Promise<SchemaInfo>
+  previewTable(table: string, limit: number, signal?: AbortSignal): Promise<{ columns: string[]; rows: Array<Record<string, unknown>> }>
+  listFunctions(signal?: AbortSignal): Promise<FunctionInfo[]>
+  listTriggers(signal?: AbortSignal): Promise<TriggerInfo[]>
+  listForeignKeys(signal?: AbortSignal): Promise<ForeignKeyInfo[]>
+  schemaDump(signal?: AbortSignal): Promise<SchemaDump>
   close(): Promise<void>
+}
+
+const IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
+
+/** Reject anything that is not a plain SQL identifier (table/column names). */
+export function assertSafeIdentifier(name: string, what = 'identifier'): void {
+  if (!IDENTIFIER_RE.test(name)) {
+    throw new SqlError(`Invalid ${what}: "${name}". Only letters, digits, and underscores are allowed.`, 'denied')
+  }
 }
 
 export class SqlError extends Error {
@@ -259,6 +301,64 @@ export class DbClient {
     const driver = await this.getDriver()
     try {
       return await driver.getSchema(table, this.combinedSignal(signal))
+    } catch (error) {
+      if (error instanceof SqlError) throw error
+      throw new SqlError(error instanceof Error ? error.message : String(error), 'query')
+    }
+  }
+
+  async previewTable(table: string, limit: number, signal?: AbortSignal): Promise<QueryResult> {
+    assertSafeIdentifier(table, 'table name')
+    const driver = await this.getDriver()
+    try {
+      const result = await driver.previewTable(table, limit, this.combinedSignal(signal))
+      const truncated = result.rows.length > limit
+      return {
+        columns: result.columns,
+        rows: truncated ? result.rows.slice(0, limit) : result.rows,
+        rowCount: result.rows.length,
+        truncated,
+      }
+    } catch (error) {
+      if (error instanceof SqlError) throw error
+      throw new SqlError(error instanceof Error ? error.message : String(error), 'query')
+    }
+  }
+
+  async listFunctions(signal?: AbortSignal): Promise<FunctionInfo[]> {
+    const driver = await this.getDriver()
+    try {
+      return await driver.listFunctions(this.combinedSignal(signal))
+    } catch (error) {
+      if (error instanceof SqlError) throw error
+      throw new SqlError(error instanceof Error ? error.message : String(error), 'query')
+    }
+  }
+
+  async listTriggers(signal?: AbortSignal): Promise<TriggerInfo[]> {
+    const driver = await this.getDriver()
+    try {
+      return await driver.listTriggers(this.combinedSignal(signal))
+    } catch (error) {
+      if (error instanceof SqlError) throw error
+      throw new SqlError(error instanceof Error ? error.message : String(error), 'query')
+    }
+  }
+
+  async listForeignKeys(signal?: AbortSignal): Promise<ForeignKeyInfo[]> {
+    const driver = await this.getDriver()
+    try {
+      return await driver.listForeignKeys(this.combinedSignal(signal))
+    } catch (error) {
+      if (error instanceof SqlError) throw error
+      throw new SqlError(error instanceof Error ? error.message : String(error), 'query')
+    }
+  }
+
+  async schemaDump(signal?: AbortSignal): Promise<SchemaDump> {
+    const driver = await this.getDriver()
+    try {
+      return await driver.schemaDump(this.combinedSignal(signal))
     } catch (error) {
       if (error instanceof SqlError) throw error
       throw new SqlError(error instanceof Error ? error.message : String(error), 'query')

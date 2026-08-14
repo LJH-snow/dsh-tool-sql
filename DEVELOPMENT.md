@@ -48,6 +48,17 @@
 
 **不在范围（v0.3）**：写操作、执行 DDL、跨库查询。
 
+### 1.5 范围（v0.4，阶段 7）
+| 工具 | 功能 | 需凭据 |
+|---|---|---|
+| `sql_preview` | 查看表前 N 行数据（表名安全校验 + LIMIT，默认 10，上限 100） | 是 |
+| `sql_list_functions` | 列出函数/存储过程（名称/参数/语言/返回类型） | 是 |
+| `sql_list_triggers` | 列出触发器（表/时机/事件/定义） | 是 |
+| `sql_list_foreign_keys` | 列出外键（表/列/引用表/引用列） | 是 |
+| `sql_schema_dump` | 整库结构导出：所有表 DDL + 视图定义 | 是 |
+
+**不在范围（v0.4）**：写操作、执行 DDL、跨库查询。
+
 ## 2. 技术背景（契约要点，同 dsh-tool-github 已验证）
 
 - `defineTool` 契约：参数自动校验、输出规范 JSON 值、`exec.signal` 透传、`presentCall`/`presentResult` 纯函数。
@@ -90,6 +101,13 @@
 - [x] `sql_ping`：SELECT 1 + 延迟
 - [x] Driver 新增 `listViews`/`tableSize`/`getSchema` + PG/MySQL 实现
 - [x] 注册 4 个新工具 + UI 呈现
+- [x] 验收：mock 单测；typecheck；build
+- [x] README 双语更新 + 推送
+
+### 阶段 7：v0.4 扩展（数据预览与对象发现）
+- [x] `sql_preview`：表名安全校验 + LIMIT（driver 生成固定 SQL，不走 assertReadOnly）
+- [x] Driver 新增 `previewTable`/`listFunctions`/`listTriggers`/`listForeignKeys`/`schemaDump` + PG/MySQL 实现
+- [x] 注册 5 个新工具 + UI 呈现
 - [x] 验收：mock 单测；typecheck；build
 - [x] README 双语更新 + 推送
 
@@ -139,6 +157,21 @@
 - `sql_ping` 在 client 层用 `performance.now()` 计时 + `SELECT 1`，不新增驱动方法。
 - 测试增至 54/54（client 24 + tools 30）；typecheck / build 全绿。
 
+### 2026-08-14（阶段 7 规划）
+- 规划 v0.4：新增 5 个工具（数据预览/函数/触发器/外键/整库结构导出），全部只读。
+- `sql_preview` 不走 assertReadOnly（SQL 由驱动固定生成），改为**表名安全校验**（`^[A-Za-z_][A-Za-z0-9_]*$`）+ 双引号/反引号包裹 + LIMIT 参数化。
+
+### 2026-08-14（阶段 7 实现）
+- `client.ts` 新增 `assertSafeIdentifier`（只允许字母/数字/下划线）与 5 个方法（`previewTable`/`listFunctions`/`listTriggers`/`listForeignKeys`/`schemaDump`）。
+- Driver 双驱动实现：
+  - PG 函数：`pg_proc` + `pg_get_function_identity_arguments`；触发器：`pg_trigger` + `pg_get_triggerdef`（正则解析 BEFORE/AFTER/INSTEAD OF + 事件）；外键：`table_constraints` 三表 JOIN；schemaDump 复用内部 `createSchema`/`createViews`。
+  - MySQL 函数：`information_schema.routines`；触发器：`information_schema.triggers`（含时机/事件/语句）；外键：`key_column_usage`（REFERENCED_TABLE_NAME 非空）；schemaDump 复用 `getSchemaFor`（SHOW CREATE TABLE 循环）。
+  - preview：PG `SELECT * FROM "t" LIMIT $1`；MySQL `SELECT * FROM \`t\` LIMIT ?`。
+- 注册 5 个新工具：`sql_preview`/`sql_list_functions`/`sql_list_triggers`/`sql_list_foreign_keys`/`sql_schema_dump`（共 17 工具）。
+- `sql_preview` limit 钳制 1-100（默认 10）。
+- 测试增至 69/69（client 28 + tools 41）；typecheck / build 全绿。
+- 踩坑：驱动对象方法内 `this` 在闭包中不可靠（MySQL `this.getSchema` 类型推断失败），统一改为内部闭包函数。
+
 ## 5. 风险与决策记录
 
 | 时间 | 决策/风险 | 说明 |
@@ -149,4 +182,6 @@
 | 2026-08-14 | 黑名单可能误伤字符串字面量 | 如 `WHERE action = 'delete'` 会被拒绝——安全优先，宁可误杀 |
 | 2026-08-14 | 表统计为估算值 | reltuples / TABLE_ROWS 是优化器近似值，输出标注 estimated |
 | 2026-08-14 | PG 建表 DDL 为简化生成 | 不保证与 pg_dump 完全一致（不含约束/权限），明确标注 simplified |
+| 2026-08-14 | preview 表名严格校验 | 只允许字母数字下划线，杜绝表名拼接注入；非法表名直接拒绝 |
+| 2026-08-14 | schema_dump 体量可控 | 表 DDL 简化生成 + 视图定义，不含触发器/函数定义（用专门工具查） |
 | 2026-08-14 | 风险：npm 发布受 2FA 限制 | 同 dsh-tool-github，先 GitHub 安装方式 |

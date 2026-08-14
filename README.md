@@ -67,6 +67,11 @@ Full example: [examples/cordis.yml](examples/cordis.yml).
 | `sql_list_views` | List views with their definitions |
 | `sql_table_size` | Table disk usage (data, index, total bytes) |
 | `sql_get_schema` | `CREATE TABLE` DDL (MySQL: server DDL; PostgreSQL: simplified from catalog) |
+| `sql_preview` | Preview the first rows of a table (validated table name, LIMIT 1-100, default 10) |
+| `sql_list_functions` | List functions/procedures (name, arguments, language, return type) |
+| `sql_list_triggers` | List triggers (name, table, timing, event, definition) |
+| `sql_list_foreign_keys` | List foreign keys (table/column → referenced table/column) |
+| `sql_schema_dump` | Export whole-database structure: all table DDLs + view definitions |
 
 ## Development
 

@@ -62,6 +62,14 @@ function mockDriver(overrides: Partial<Driver> = {}): Driver {
     listViews: vi.fn(async () => [{ name: 'active_users', definition: 'SELECT * FROM users WHERE active' }]),
     tableSize: vi.fn(async () => ({ table: 'users', dataBytes: 1024, indexBytes: 512, totalBytes: 1536 })),
     getSchema: vi.fn(async () => ({ table: 'users', ddl: 'CREATE TABLE users (id integer);', simplified: true })),
+    previewTable: vi.fn(async () => ({ columns: ['id'], rows: [{ id: 1 }] })),
+    listFunctions: vi.fn(async () => [{ name: 'add', arguments: 'a int, b int', language: 'sql', returnType: 'integer' }]),
+    listTriggers: vi.fn(async () => [{ name: 'trg', table: 'users', timing: 'AFTER', event: 'INSERT', definition: 'CREATE TRIGGER ...' }]),
+    listForeignKeys: vi.fn(async () => [{ name: 'fk', table: 'orders', column: 'user_id', referencedTable: 'users', referencedColumn: 'id' }]),
+    schemaDump: vi.fn(async () => ({
+      tables: [{ table: 'users', ddl: 'CREATE TABLE users (id integer);', simplified: true }],
+      views: [{ name: 'active_users', definition: 'SELECT * FROM users' }],
+    })),
     close: vi.fn(async () => {}),
     ...overrides,
   }
@@ -208,5 +216,43 @@ describe('DbClient v0.2 methods', () => {
   it('getSchema returns DDL', async () => {
     const client = makeClient(mockDriver())
     expect(await client.getSchema('users')).toEqual({ table: 'users', ddl: 'CREATE TABLE users (id integer);', simplified: true })
+  })
+
+  it('previewTable validates the table name before touching the driver', async () => {
+    const driver = mockDriver()
+    const client = makeClient(driver)
+    await expect(client.previewTable('users; DROP TABLE x', 10)).rejects.toMatchObject({ kind: 'denied' })
+    expect(driver.previewTable).not.toHaveBeenCalled()
+  })
+
+  it('previewTable returns rows and truncates to limit', async () => {
+    const rows = Array.from({ length: 25 }, (_, i) => ({ id: i }))
+    const driver = mockDriver({ previewTable: vi.fn(async () => ({ columns: ['id'], rows })) })
+    const client = makeClient(driver)
+    const result = await client.previewTable('users', 10)
+    expect(result.rows).toHaveLength(10)
+    expect(result.rowCount).toBe(25)
+    expect(result.truncated).toBe(true)
+    expect(driver.previewTable).toHaveBeenCalledWith('users', 10, expect.anything())
+  })
+
+  it('listFunctions/listTriggers/listForeignKeys return object info', async () => {
+    const client = makeClient(mockDriver())
+    expect(await client.listFunctions()).toEqual([
+      { name: 'add', arguments: 'a int, b int', language: 'sql', returnType: 'integer' },
+    ])
+    expect(await client.listTriggers()).toEqual([
+      { name: 'trg', table: 'users', timing: 'AFTER', event: 'INSERT', definition: 'CREATE TRIGGER ...' },
+    ])
+    expect(await client.listForeignKeys()).toEqual([
+      { name: 'fk', table: 'orders', column: 'user_id', referencedTable: 'users', referencedColumn: 'id' },
+    ])
+  })
+
+  it('schemaDump returns tables and views', async () => {
+    const client = makeClient(mockDriver())
+    const dump = await client.schemaDump()
+    expect(dump.tables).toHaveLength(1)
+    expect(dump.views[0]).toMatchObject({ name: 'active_users' })
   })
 })

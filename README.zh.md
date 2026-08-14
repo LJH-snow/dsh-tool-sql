@@ -67,6 +67,11 @@ npm install /path/to/dsh-tool-sql
 | `sql_list_views` | 列出视图及定义 |
 | `sql_table_size` | 表占用空间（数据/索引/合计字节） |
 | `sql_get_schema` | 查看建表 DDL（MySQL：服务器原样；PostgreSQL：catalog 生成简化版） |
+| `sql_preview` | 预览表前 N 行数据（表名严格校验，LIMIT 1-100，默认 10） |
+| `sql_list_functions` | 列出函数/存储过程（名称/参数/语言/返回类型） |
+| `sql_list_triggers` | 列出触发器（名称/表/时机/事件/定义） |
+| `sql_list_foreign_keys` | 列出外键（表.列 → 引用表.引用列） |
+| `sql_schema_dump` | 导出整库结构：所有表 DDL + 视图定义 |
 
 ## 开发
 

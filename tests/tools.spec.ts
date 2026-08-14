@@ -30,6 +30,14 @@ function mockDriver(overrides: Partial<Driver> = {}): Driver {
     listViews: vi.fn(async () => [{ name: 'active_users', definition: 'SELECT * FROM users WHERE active' }]),
     tableSize: vi.fn(async () => ({ table: 'users', dataBytes: 1024, indexBytes: 512, totalBytes: 1536 })),
     getSchema: vi.fn(async () => ({ table: 'users', ddl: 'CREATE TABLE users (id integer);', simplified: true })),
+    previewTable: vi.fn(async () => ({ columns: ['id'], rows: [{ id: 1 }] })),
+    listFunctions: vi.fn(async () => [{ name: 'add', arguments: 'a int, b int', language: 'sql', returnType: 'integer' }]),
+    listTriggers: vi.fn(async () => [{ name: 'trg', table: 'users', timing: 'AFTER', event: 'INSERT', definition: 'CREATE TRIGGER ...' }]),
+    listForeignKeys: vi.fn(async () => [{ name: 'fk', table: 'orders', column: 'user_id', referencedTable: 'users', referencedColumn: 'id' }]),
+    schemaDump: vi.fn(async () => ({
+      tables: [{ table: 'users', ddl: 'CREATE TABLE users (id integer);', simplified: true }],
+      views: [{ name: 'active_users', definition: 'SELECT * FROM users' }],
+    })),
     close: vi.fn(async () => {}),
     ...overrides,
   }
@@ -44,11 +52,16 @@ describe('tool definitions', () => {
       'sql_describe_table',
       'sql_explain',
       'sql_get_schema',
+      'sql_list_foreign_keys',
+      'sql_list_functions',
       'sql_list_indexes',
       'sql_list_tables',
+      'sql_list_triggers',
       'sql_list_views',
       'sql_ping',
+      'sql_preview',
       'sql_query',
+      'sql_schema_dump',
       'sql_search_columns',
       'sql_table_size',
       'sql_table_stats',
@@ -124,6 +137,8 @@ describe('tool definitions', () => {
     await expect(size.execute({} as never, exec())).rejects.toThrow()
     const schema = tools()['sql_get_schema']
     await expect(schema.execute({} as never, exec())).rejects.toThrow()
+    const preview = tools()['sql_preview']
+    await expect(preview.execute({} as never, exec())).rejects.toThrow()
   })
 
   it('sql_explain prefixes EXPLAIN when missing and passes read-only check', async () => {
@@ -230,6 +245,70 @@ describe('tool definitions', () => {
     })
     expect(JSON.stringify(blocks)).toContain('CREATE TABLE users')
   })
+
+  it('sql_preview returns rows and clamps limit to 1-100', async () => {
+    const driver = mockDriver()
+    const client = makeClient(driver)
+    const tool = createTools(client).find(t => t.name === 'sql_preview')!
+    const result = await tool.execute({ table: 'users', limit: 999 }, exec())
+    expect(driver.previewTable).toHaveBeenCalledWith('users', 100, expect.anything())
+    expect(result).toMatchObject({ table: 'users', limit: 100, rowCount: 1 })
+    const result2 = await tool.execute({ table: 'users' }, exec())
+    expect(result2).toMatchObject({ limit: 10 })
+  })
+
+  it('sql_preview render formats rows', async () => {
+    const tool = tools()['sql_preview']
+    const blocks = (tool.output as { render: (a: unknown, v: any) => unknown }).render({ table: 'users' }, {
+      table: 'users', limit: 10, columns: ['id'], rows: [{ id: 1 }], rowCount: 1, truncated: false,
+    })
+    expect(JSON.stringify(blocks)).toContain('id')
+    expect(JSON.stringify(blocks)).toContain('1')
+  })
+
+  it('sql_list_functions returns and renders functions', async () => {
+    const tool = tools()['sql_list_functions']
+    const result = await tool.execute({}, exec())
+    expect(result).toEqual({ functions: [{ name: 'add', arguments: 'a int, b int', language: 'sql', returnType: 'integer' }] })
+    const blocks = (tool.output as { render: (a: unknown, v: any) => unknown }).render({}, {
+      functions: [{ name: 'add', arguments: 'a int, b int', language: 'sql', returnType: 'integer' }],
+    })
+    expect(JSON.stringify(blocks)).toContain('add')
+  })
+
+  it('sql_list_triggers returns and renders triggers', async () => {
+    const tool = tools()['sql_list_triggers']
+    const result = await tool.execute({}, exec())
+    expect(result).toEqual({ triggers: [{ name: 'trg', table: 'users', timing: 'AFTER', event: 'INSERT', definition: 'CREATE TRIGGER ...' }] })
+    const blocks = (tool.output as { render: (a: unknown, v: any) => unknown }).render({}, {
+      triggers: [{ name: 'trg', table: 'users', timing: 'AFTER', event: 'INSERT' }],
+    })
+    expect(JSON.stringify(blocks)).toContain('AFTER')
+  })
+
+  it('sql_list_foreign_keys returns and renders foreign keys', async () => {
+    const tool = tools()['sql_list_foreign_keys']
+    const result = await tool.execute({}, exec())
+    expect(result).toEqual({ foreignKeys: [{ name: 'fk', table: 'orders', column: 'user_id', referencedTable: 'users', referencedColumn: 'id' }] })
+    const blocks = (tool.output as { render: (a: unknown, v: any) => unknown }).render({}, {
+      foreignKeys: [{ name: 'fk', table: 'orders', column: 'user_id', referencedTable: 'users', referencedColumn: 'id' }],
+    })
+    expect(JSON.stringify(blocks)).toContain('orders.user_id')
+    expect(JSON.stringify(blocks)).toContain('users.id')
+  })
+
+  it('sql_schema_dump returns and renders the dump', async () => {
+    const tool = tools()['sql_schema_dump']
+    const result = await tool.execute({}, exec())
+    expect(result).toMatchObject({ tables: [{ table: 'users' }], views: [{ name: 'active_users' }] })
+    const blocks = (tool.output as { render: (a: unknown, v: any) => unknown }).render({}, {
+      tables: [{ table: 'users', ddl: 'CREATE TABLE users (id integer);', simplified: true }],
+      views: [{ name: 'active_users', definition: 'SELECT * FROM users' }],
+    })
+    const text = JSON.stringify(blocks)
+    expect(text).toContain('CREATE TABLE users')
+    expect(text).toContain('CREATE VIEW active_users')
+  })
 })
 
 describe('tool presentation (pure render intents)', () => {
@@ -319,5 +398,36 @@ describe('tool presentation (pure render intents)', () => {
     expect(t.presentCall(args)).toMatchObject({ card: 'generic', kind: 'read', title: 'Schema of users' })
     expect(t.presentResult(args, { table: 'users', simplified: true })).toMatchObject({ title: 'Schema: users (simplified)' })
     expect(t.presentResult(args, { table: 'users', simplified: false })).toMatchObject({ title: 'Schema: users' })
+  })
+
+  it('sql_preview pending and result cards', () => {
+    const t = defs()['sql_preview'] as any
+    const args = { table: 'users' }
+    expect(t.presentCall(args)).toMatchObject({ card: 'generic', kind: 'read', title: 'Preview users' })
+    expect(t.presentResult(args, { table: 'users', rowCount: 10 })).toMatchObject({ title: 'Preview: users' })
+  })
+
+  it('sql_list_functions pending and result cards', () => {
+    const t = defs()['sql_list_functions'] as any
+    expect(t.presentCall({})).toMatchObject({ card: 'generic', kind: 'read', title: 'List functions' })
+    expect(t.presentResult({}, { functions: [{}, {}] })).toMatchObject({ title: '2 function(s)' })
+  })
+
+  it('sql_list_triggers pending and result cards', () => {
+    const t = defs()['sql_list_triggers'] as any
+    expect(t.presentCall({})).toMatchObject({ card: 'generic', kind: 'read', title: 'List triggers' })
+    expect(t.presentResult({}, { triggers: [{}] })).toMatchObject({ title: '1 trigger(s)' })
+  })
+
+  it('sql_list_foreign_keys pending and result cards', () => {
+    const t = defs()['sql_list_foreign_keys'] as any
+    expect(t.presentCall({})).toMatchObject({ card: 'generic', kind: 'read', title: 'List foreign keys' })
+    expect(t.presentResult({}, { foreignKeys: [{}, {}] })).toMatchObject({ title: '2 foreign key(s)' })
+  })
+
+  it('sql_schema_dump pending and result cards', () => {
+    const t = defs()['sql_schema_dump'] as any
+    expect(t.presentCall({})).toMatchObject({ card: 'generic', kind: 'read', title: 'Dump schema' })
+    expect(t.presentResult({}, { tables: [{}], views: [{}] })).toMatchObject({ title: '1 table(s) · 1 view(s)' })
   })
 })
