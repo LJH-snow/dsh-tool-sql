@@ -55,6 +55,10 @@ function mockDriver(overrides: Partial<Driver> = {}): Driver {
     query: vi.fn(async () => ({ columns: ['id'], rows: [{ id: 1 }] })),
     listTables: vi.fn(async () => ['users', 'orders']),
     describeTable: vi.fn(async () => [{ name: 'id', type: 'integer', nullable: false, defaultValue: null }]),
+    listIndexes: vi.fn(async () => [{ name: 'users_pkey', columns: ['id'], unique: true }]),
+    databaseInfo: vi.fn(async () => ({ version: 'PostgreSQL 16', database: 'db', user: 'u', serverTime: '2026-08-14T00:00:00Z' })),
+    tableStats: vi.fn(async () => [{ table: 'users', schema: 'public', estimatedRows: 100 }]),
+    searchColumns: vi.fn(async () => [{ table: 'users', column: 'user_id', type: 'integer' }]),
     close: vi.fn(async () => {}),
     ...overrides,
   }
@@ -132,5 +136,44 @@ describe('DbClient.listTables / describeTable', () => {
     const driver = mockDriver({ listTables: vi.fn(async () => { throw new Error('conn refused') }) })
     const client = makeClient(driver)
     await expect(client.listTables()).rejects.toMatchObject({ kind: 'query', message: 'conn refused' })
+  })
+})
+
+describe('DbClient v0.2 methods', () => {
+  it('listIndexes returns index info', async () => {
+    const client = makeClient(mockDriver())
+    expect(await client.listIndexes('users')).toEqual([
+      { name: 'users_pkey', columns: ['id'], unique: true },
+    ])
+  })
+
+  it('databaseInfo returns server info', async () => {
+    const client = makeClient(mockDriver())
+    expect(await client.databaseInfo()).toMatchObject({ version: 'PostgreSQL 16', database: 'db' })
+  })
+
+  it('tableStats returns estimated row counts', async () => {
+    const client = makeClient(mockDriver())
+    expect(await client.tableStats()).toEqual([{ table: 'users', schema: 'public', estimatedRows: 100 }])
+  })
+
+  it('searchColumns normalizes a bare pattern to %pattern%', async () => {
+    const driver = mockDriver()
+    const client = makeClient(driver)
+    await client.searchColumns('user')
+    expect(driver.searchColumns).toHaveBeenCalledWith('%user%', expect.anything())
+  })
+
+  it('searchColumns passes through patterns that already contain %', async () => {
+    const driver = mockDriver()
+    const client = makeClient(driver)
+    await client.searchColumns('%created_%')
+    expect(driver.searchColumns).toHaveBeenCalledWith('%created_%', expect.anything())
+  })
+
+  it('maps driver errors from v0.2 methods to SqlError', async () => {
+    const driver = mockDriver({ listIndexes: vi.fn(async () => { throw new Error('boom') }) })
+    const client = makeClient(driver)
+    await expect(client.listIndexes('users')).rejects.toMatchObject({ kind: 'query', message: 'boom' })
   })
 })

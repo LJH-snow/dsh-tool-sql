@@ -34,11 +34,40 @@ export interface ColumnInfo {
   defaultValue: string | null
 }
 
+export interface IndexInfo {
+  name: string
+  columns: string[]
+  unique: boolean
+}
+
+export interface DatabaseInfo {
+  version: string
+  database: string
+  user: string
+  serverTime: string
+}
+
+export interface TableStat {
+  table: string
+  schema: string
+  estimatedRows: number
+}
+
+export interface ColumnMatch {
+  table: string
+  column: string
+  type: string
+}
+
 /** SQL driver adapter; implementations live in drivers/* and are dynamically imported. */
 export interface Driver {
   query(sql: string, signal?: AbortSignal): Promise<{ columns: string[]; rows: Array<Record<string, unknown>> }>
   listTables(signal?: AbortSignal): Promise<string[]>
   describeTable(table: string, signal?: AbortSignal): Promise<ColumnInfo[]>
+  listIndexes(table: string, signal?: AbortSignal): Promise<IndexInfo[]>
+  databaseInfo(signal?: AbortSignal): Promise<DatabaseInfo>
+  tableStats(signal?: AbortSignal): Promise<TableStat[]>
+  searchColumns(pattern: string, signal?: AbortSignal): Promise<ColumnMatch[]>
   close(): Promise<void>
 }
 
@@ -126,6 +155,47 @@ export class DbClient {
     const driver = await this.getDriver()
     try {
       return await driver.describeTable(table, this.combinedSignal(signal))
+    } catch (error) {
+      if (error instanceof SqlError) throw error
+      throw new SqlError(error instanceof Error ? error.message : String(error), 'query')
+    }
+  }
+
+  async listIndexes(table: string, signal?: AbortSignal): Promise<IndexInfo[]> {
+    const driver = await this.getDriver()
+    try {
+      return await driver.listIndexes(table, this.combinedSignal(signal))
+    } catch (error) {
+      if (error instanceof SqlError) throw error
+      throw new SqlError(error instanceof Error ? error.message : String(error), 'query')
+    }
+  }
+
+  async databaseInfo(signal?: AbortSignal): Promise<DatabaseInfo> {
+    const driver = await this.getDriver()
+    try {
+      return await driver.databaseInfo(this.combinedSignal(signal))
+    } catch (error) {
+      if (error instanceof SqlError) throw error
+      throw new SqlError(error instanceof Error ? error.message : String(error), 'query')
+    }
+  }
+
+  async tableStats(signal?: AbortSignal): Promise<TableStat[]> {
+    const driver = await this.getDriver()
+    try {
+      return await driver.tableStats(this.combinedSignal(signal))
+    } catch (error) {
+      if (error instanceof SqlError) throw error
+      throw new SqlError(error instanceof Error ? error.message : String(error), 'query')
+    }
+  }
+
+  async searchColumns(pattern: string, signal?: AbortSignal): Promise<ColumnMatch[]> {
+    const driver = await this.getDriver()
+    try {
+      const normalized = pattern.includes('%') ? pattern : `%${pattern}%`
+      return await driver.searchColumns(normalized, this.combinedSignal(signal))
     } catch (error) {
       if (error instanceof SqlError) throw error
       throw new SqlError(error instanceof Error ? error.message : String(error), 'query')

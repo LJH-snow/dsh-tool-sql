@@ -58,6 +58,11 @@ npm install /path/to/dsh-tool-sql
 | `sql_query` | 执行只读 SQL 查询，以 JSON 返回行数据（超出 `maxRows` 截断） |
 | `sql_list_tables` | 列出表（PostgreSQL：public schema；MySQL：当前数据库） |
 | `sql_describe_table` | 查看表结构（列名/类型/可空/默认值） |
+| `sql_explain` | 查看只读语句的执行计划（自动补 `EXPLAIN` 前缀） |
+| `sql_list_indexes` | 列出表的索引（名称/覆盖列/是否唯一） |
+| `sql_database_info` | 数据库信息（版本/当前库/当前用户/服务器时间） |
+| `sql_table_stats` | 各表估算行数（近似值，从大到小） |
+| `sql_search_columns` | 按列名跨表搜索（支持 `%`/`_`，最多 100 条） |
 
 ## 开发
 

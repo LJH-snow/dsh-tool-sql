@@ -23,6 +23,10 @@ function mockDriver(overrides: Partial<Driver> = {}): Driver {
     query: vi.fn(async () => ({ columns: ['id', 'name'], rows: [{ id: 1, name: 'a' }] })),
     listTables: vi.fn(async () => ['users']),
     describeTable: vi.fn(async () => [{ name: 'id', type: 'integer', nullable: false, defaultValue: null }]),
+    listIndexes: vi.fn(async () => [{ name: 'users_pkey', columns: ['id'], unique: true }]),
+    databaseInfo: vi.fn(async () => ({ version: 'PostgreSQL 16', database: 'db', user: 'u', serverTime: '2026-08-14T00:00:00Z' })),
+    tableStats: vi.fn(async () => [{ table: 'users', schema: 'public', estimatedRows: 100 }]),
+    searchColumns: vi.fn(async () => [{ table: 'users', column: 'user_id', type: 'integer' }]),
     close: vi.fn(async () => {}),
     ...overrides,
   }
@@ -32,7 +36,16 @@ const tools = () => Object.fromEntries(createTools(makeClient(mockDriver())).map
 
 describe('tool definitions', () => {
   it('registers the planned tools', () => {
-    expect(Object.keys(tools()).sort()).toEqual(['sql_describe_table', 'sql_list_tables', 'sql_query'])
+    expect(Object.keys(tools()).sort()).toEqual([
+      'sql_database_info',
+      'sql_describe_table',
+      'sql_explain',
+      'sql_list_indexes',
+      'sql_list_tables',
+      'sql_query',
+      'sql_search_columns',
+      'sql_table_stats',
+    ])
   })
 
   it('sql_query returns rows and maps read-only output', async () => {
@@ -94,6 +107,79 @@ describe('tool definitions', () => {
     await expect(tool.execute({} as never, exec())).rejects.toThrow()
     const describe = tools()['sql_describe_table']
     await expect(describe.execute({} as never, exec())).rejects.toThrow()
+    const explain = tools()['sql_explain']
+    await expect(explain.execute({} as never, exec())).rejects.toThrow()
+    const indexes = tools()['sql_list_indexes']
+    await expect(indexes.execute({} as never, exec())).rejects.toThrow()
+    const search = tools()['sql_search_columns']
+    await expect(search.execute({} as never, exec())).rejects.toThrow()
+  })
+
+  it('sql_explain prefixes EXPLAIN when missing and passes read-only check', async () => {
+    const driver = mockDriver()
+    const client = makeClient(driver)
+    const tool = createTools(client).find(t => t.name === 'sql_explain')!
+    const result = await tool.execute({ sql: 'SELECT * FROM users' }, exec())
+    expect(result).toMatchObject({ rowCount: 1 })
+    expect(driver.query).toHaveBeenCalledWith('EXPLAIN SELECT * FROM users', expect.anything())
+  })
+
+  it('sql_explain does not double-prefix EXPLAIN', async () => {
+    const driver = mockDriver()
+    const client = makeClient(driver)
+    const tool = createTools(client).find(t => t.name === 'sql_explain')!
+    await tool.execute({ sql: 'EXPLAIN SELECT 1' }, exec())
+    expect(driver.query).toHaveBeenCalledWith('EXPLAIN SELECT 1', expect.anything())
+  })
+
+  it('sql_explain rejects write statements through the read-only check', async () => {
+    const driver = mockDriver()
+    const client = makeClient(driver)
+    const tool = createTools(client).find(t => t.name === 'sql_explain')!
+    await expect(tool.execute({ sql: 'DELETE FROM users' }, exec())).rejects.toMatchObject({ kind: 'denied' })
+    expect(driver.query).not.toHaveBeenCalled()
+  })
+
+  it('sql_list_indexes returns indexes and renders them', async () => {
+    const tool = tools()['sql_list_indexes']
+    const result = await tool.execute({ table: 'users' }, exec())
+    expect(result).toEqual({ table: 'users', indexes: [{ name: 'users_pkey', columns: ['id'], unique: true }] })
+    const blocks = (tool.output as { render: (a: unknown, v: any) => unknown }).render({ table: 'users' }, {
+      table: 'users',
+      indexes: [{ name: 'users_pkey', columns: ['id'], unique: true }],
+    })
+    expect(JSON.stringify(blocks)).toContain('users_pkey')
+    expect(JSON.stringify(blocks)).toContain('YES')
+  })
+
+  it('sql_database_info returns and renders server info', async () => {
+    const tool = tools()['sql_database_info']
+    const result = await tool.execute({}, exec())
+    expect(result).toMatchObject({ database: 'db', user: 'u' })
+    const blocks = (tool.output as { render: (a: unknown, v: any) => unknown }).render({}, {
+      version: 'PostgreSQL 16', database: 'db', user: 'u', serverTime: '2026-08-14T00:00:00Z',
+    })
+    expect(JSON.stringify(blocks)).toContain('PostgreSQL 16')
+  })
+
+  it('sql_table_stats returns estimated rows and renders them', async () => {
+    const tool = tools()['sql_table_stats']
+    const result = await tool.execute({}, exec())
+    expect(result).toEqual({ stats: [{ table: 'users', schema: 'public', estimatedRows: 100 }] })
+    const blocks = (tool.output as { render: (a: unknown, v: any) => unknown }).render({}, {
+      stats: [{ table: 'users', schema: 'public', estimatedRows: 100 }],
+    })
+    expect(JSON.stringify(blocks)).toContain('users')
+  })
+
+  it('sql_search_columns returns matches and renders them', async () => {
+    const tool = tools()['sql_search_columns']
+    const result = await tool.execute({ pattern: 'user' }, exec())
+    expect(result).toEqual({ matches: [{ table: 'users', column: 'user_id', type: 'integer' }] })
+    const blocks = (tool.output as { render: (a: unknown, v: any) => unknown }).render({ pattern: 'user' }, {
+      matches: [{ table: 'users', column: 'user_id', type: 'integer' }],
+    })
+    expect(JSON.stringify(blocks)).toContain('users.user_id')
   })
 })
 
@@ -124,5 +210,37 @@ describe('tool presentation (pure render intents)', () => {
       card: 'generic',
       title: 'Table users',
     })
+  })
+
+  it('sql_explain pending and result cards', () => {
+    const t = defs()['sql_explain'] as any
+    expect(t.presentCall({ sql: 'SELECT 1' })).toMatchObject({ card: 'generic', kind: 'read' })
+    expect(t.presentResult({ sql: 'SELECT 1' }, { columns: ['QUERY PLAN'], rowCount: 2 })).toMatchObject({ title: 'Plan: 2 row(s)' })
+  })
+
+  it('sql_list_indexes pending and result cards', () => {
+    const t = defs()['sql_list_indexes'] as any
+    const args = { table: 'users' }
+    expect(t.presentCall(args)).toMatchObject({ card: 'generic', kind: 'read', title: 'List indexes of users' })
+    expect(t.presentResult(args, { table: 'users', indexes: [{ name: 'a' }] })).toMatchObject({ title: 'Indexes: users' })
+  })
+
+  it('sql_database_info pending and result cards', () => {
+    const t = defs()['sql_database_info'] as any
+    expect(t.presentCall({})).toMatchObject({ card: 'generic', kind: 'read', title: 'Database info' })
+    expect(t.presentResult({}, { database: 'db', version: 'PG 16' })).toMatchObject({ title: 'Database db' })
+  })
+
+  it('sql_table_stats pending and result cards', () => {
+    const t = defs()['sql_table_stats'] as any
+    expect(t.presentCall({})).toMatchObject({ card: 'generic', kind: 'read', title: 'Table stats' })
+    expect(t.presentResult({}, { stats: [{}, {}] })).toMatchObject({ title: '2 table(s)' })
+  })
+
+  it('sql_search_columns pending and result cards', () => {
+    const t = defs()['sql_search_columns'] as any
+    const args = { pattern: 'user' }
+    expect(t.presentCall(args)).toMatchObject({ card: 'generic', kind: 'search', title: 'Search columns: user' })
+    expect(t.presentResult(args, { matches: [{ table: 't', column: 'c' }] })).toMatchObject({ title: '1 column(s)' })
   })
 })

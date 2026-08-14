@@ -58,24 +58,7 @@ export function createTools(client: DbClient) {
             truncated: { type: 'boolean', description: 'True when more rows exist but the result was cut to maxRows' },
           },
         },
-        render: (_args, value) => {
-          const columns = value.columns ?? []
-          const rows = value.rows ?? []
-          const lines: string[] = []
-          if (columns.length > 0) {
-            lines.push(columns.join('\t'))
-            lines.push(columns.map(() => '---').join('\t'))
-            for (const row of rows) {
-              lines.push(columns.map((c: string) => formatCell(row[c])).join('\t'))
-            }
-          }
-          if (value.truncated) {
-            lines.push(`(truncated: showing ${rows.length} of ${value.rowCount} rows)`)
-          } else {
-            lines.push(`(${value.rowCount} rows)`)
-          }
-          return [{ type: 'text', text: lines.join('\n') }]
-        },
+        render: renderQueryResult,
       },
       presentCall(args): ToolCallView {
         return { card: 'generic', title: `Query database`, kind: 'read' }
@@ -91,6 +74,54 @@ export function createTools(client: DbClient) {
       async execute(args, exec) {
         try {
           const result = await client.query(args.sql, exec.signal)
+          return {
+            columns: result.columns,
+            rows: result.rows as unknown as Array<Record<string, JsonValue>>,
+            rowCount: result.rowCount,
+            truncated: result.truncated,
+          }
+        } catch (error) {
+          if (error instanceof SqlError) throw error
+          throw error
+        }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_explain',
+      description:
+        'Show the execution plan of a read-only SQL statement. Runs EXPLAIN (or EXPLAIN + the statement). The statement itself is still read-only: EXPLAIN on a write statement is rejected.',
+      parameters: {
+        sql: { type: 'string', required: true, description: 'Read-only SQL statement to explain, e.g. SELECT * FROM users WHERE id = 1' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            columns: { type: 'array', items: { type: 'string' }, description: 'Column names in result order' },
+            rows: { type: 'array', items: { type: 'object', additionalProperties: true }, description: 'Plan rows' },
+            rowCount: { type: 'integer', description: 'Number of plan rows' },
+            truncated: { type: 'boolean', description: 'True when the result was cut to maxRows' },
+          },
+        },
+        render: renderQueryResult,
+      },
+      presentCall(args): ToolCallView {
+        return { card: 'generic', title: `Explain query`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { columns: string[]; rowCount: number; truncated?: boolean }
+        return {
+          card: 'generic',
+          title: `Plan: ${v.rowCount ?? 0} row(s)${v.truncated ? ' (truncated)' : ''}`,
+          content: [{ type: 'text', text: (v.columns ?? []).join(', ') }],
+        }
+      },
+      async execute(args, exec) {
+        try {
+          const statement = /^\s*explain\b/i.test(args.sql) ? args.sql : `EXPLAIN ${args.sql}`
+          const result = await client.query(statement, exec.signal)
           return {
             columns: result.columns,
             rows: result.rows as unknown as Array<Record<string, JsonValue>>,
@@ -184,7 +215,215 @@ export function createTools(client: DbClient) {
         return { table: args.table, columns: await client.describeTable(args.table, exec.signal) }
       },
     }),
+
+    defineTool({
+      name: 'sql_list_indexes',
+      description: 'List indexes of a table: index name, covered columns, and whether it is unique.',
+      parameters: {
+        table: { type: 'string', required: true, description: 'Table name' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            table: { type: 'string', description: 'Table name' },
+            indexes: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  name: { type: 'string', description: 'Index name' },
+                  columns: { type: 'array', items: { type: 'string' }, description: 'Columns covered by the index' },
+                  unique: { type: 'boolean', description: 'Whether the index is unique' },
+                },
+              },
+              description: 'Indexes of the table',
+            },
+          },
+        },
+        render: (_args, value) => {
+          const indexes = value.indexes ?? []
+          if (indexes.length === 0) return [{ type: 'text', text: `Table "${value.table}" has no indexes.` }]
+          const lines = ['index\tcolumns\tunique']
+          lines.push('---\t---\t---')
+          for (const idx of indexes) {
+            lines.push(`${idx.name}\t${(idx.columns ?? []).join(', ')}\t${idx.unique ? 'YES' : 'NO'}`)
+          }
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(args): ToolCallView {
+        return { card: 'generic', title: `List indexes of ${args.table}`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { table?: string; indexes?: unknown[] }
+        return { card: 'generic', title: `Indexes: ${v.table ?? ''}`, content: [{ type: 'text', text: `${v.indexes?.length ?? 0} index(es)` }] }
+      },
+      async execute(args, exec) {
+        return { table: args.table, indexes: await client.listIndexes(args.table, exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_database_info',
+      description: 'Show database server info: version, current database, current user, and server time.',
+      parameters: {},
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            version: { type: 'string', description: 'Database server version' },
+            database: { type: 'string', description: 'Current database name' },
+            user: { type: 'string', description: 'Current user' },
+            serverTime: { type: 'string', description: 'Server time (ISO)' },
+          },
+        },
+        render: (_args, value) => {
+          const lines = [
+            `version: ${value.version ?? ''}`,
+            `database: ${value.database ?? ''}`,
+            `user: ${value.user ?? ''}`,
+            `server time: ${value.serverTime ?? ''}`,
+          ]
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(): ToolCallView {
+        return { card: 'generic', title: `Database info`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { database?: string; version?: string }
+        return { card: 'generic', title: `Database ${v.database ?? ''}`, content: [{ type: 'text', text: v.version ?? '' }] }
+      },
+      async execute(_args, exec) {
+        return await client.databaseInfo(exec.signal)
+      },
+    }),
+
+    defineTool({
+      name: 'sql_table_stats',
+      description: 'List tables with estimated row counts (optimizer estimates, not exact), largest first.',
+      parameters: {},
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            stats: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  table: { type: 'string', description: 'Table name' },
+                  schema: { type: 'string', description: 'Schema name' },
+                  estimatedRows: { type: 'integer', description: 'Estimated row count (approximate)' },
+                },
+              },
+              description: 'Per-table estimated row counts',
+            },
+          },
+        },
+        render: (_args, value) => {
+          const stats = value.stats ?? []
+          if (stats.length === 0) return [{ type: 'text', text: '(no tables)' }]
+          const lines = ['table\tschema\testimated_rows']
+          lines.push('---\t---\t---')
+          for (const s of stats) {
+            lines.push(`${s.table}\t${s.schema ?? ''}\t${s.estimatedRows ?? 0}`)
+          }
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(): ToolCallView {
+        return { card: 'generic', title: `Table stats`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { stats?: unknown[] }
+        return { card: 'generic', title: `${v.stats?.length ?? 0} table(s)` }
+      },
+      async execute(_args, exec) {
+        return { stats: await client.tableStats(exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_search_columns',
+      description:
+        'Search tables and columns by column name (case-insensitive, supports % and _ wildcards). Returns up to 100 matches.',
+      parameters: {
+        pattern: { type: 'string', required: true, description: 'Column name pattern, e.g. "user" or "%created_%"' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            matches: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  table: { type: 'string', description: 'Table name' },
+                  column: { type: 'string', description: 'Column name' },
+                  type: { type: 'string', description: 'Column data type' },
+                },
+              },
+              description: 'Matching columns',
+            },
+          },
+        },
+        render: (_args, value) => {
+          const matches = value.matches ?? []
+          if (matches.length === 0) return [{ type: 'text', text: 'No matching columns found.' }]
+          const lines = ['table\tcolumn\ttype']
+          lines.push('---\t---\t---')
+          for (const m of matches) {
+            lines.push(`${m.table}.${m.column}\t${m.type ?? ''}`)
+          }
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(args): ToolCallView {
+        return { card: 'generic', title: `Search columns: ${args.pattern}`, kind: 'search' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { matches?: unknown[] }
+        return { card: 'generic', title: `${v.matches?.length ?? 0} column(s)` }
+      },
+      async execute(args, exec) {
+        return { matches: await client.searchColumns(args.pattern, exec.signal) }
+      },
+    }),
   ]
+}
+
+function renderQueryResult(_args: unknown, value: {
+  columns?: string[]
+  rows?: Array<Record<string, unknown>>
+  rowCount?: number
+  truncated?: boolean
+}): Array<{ type: 'text'; text: string }> {
+  const columns = value.columns ?? []
+  const rows = value.rows ?? []
+  const lines: string[] = []
+  if (columns.length > 0) {
+    lines.push(columns.join('\t'))
+    lines.push(columns.map(() => '---').join('\t'))
+    for (const row of rows) {
+      lines.push(columns.map((c: string) => formatCell(row[c])).join('\t'))
+    }
+  }
+  if (value.truncated) {
+    lines.push(`(truncated: showing ${rows.length} of ${value.rowCount} rows)`)
+  } else {
+    lines.push(`(${value.rowCount} rows)`)
+  }
+  return [{ type: 'text', text: lines.join('\n') }]
 }
 
 function formatCell(value: unknown): string {

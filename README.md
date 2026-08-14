@@ -58,6 +58,11 @@ Full example: [examples/cordis.yml](examples/cordis.yml).
 | `sql_query` | Run a read-only SQL query, returns rows as JSON (truncated to `maxRows`) |
 | `sql_list_tables` | List tables (PostgreSQL: `public` schema; MySQL: current database) |
 | `sql_describe_table` | Describe a table's columns (name, type, nullable, default) |
+| `sql_explain` | Show the execution plan of a read-only statement (auto-prefixes `EXPLAIN`) |
+| `sql_list_indexes` | List a table's indexes (name, covered columns, unique) |
+| `sql_database_info` | Database server info (version, current database, user, server time) |
+| `sql_table_stats` | Per-table estimated row counts, largest first |
+| `sql_search_columns` | Search columns by name across tables (supports `%`/`_`, up to 100) |
 
 ## Development
 

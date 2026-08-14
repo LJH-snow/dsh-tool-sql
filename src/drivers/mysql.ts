@@ -1,4 +1,4 @@
-import type { Driver, DbConfig, ColumnInfo } from '../client.js'
+import type { Driver, DbConfig, ColumnInfo, IndexInfo, DatabaseInfo, TableStat, ColumnMatch } from '../client.js'
 
 export async function createMysqlDriver(config: DbConfig): Promise<Driver> {
   const mysql = await import('mysql2/promise')
@@ -37,6 +37,79 @@ export async function createMysqlDriver(config: DbConfig): Promise<Driver> {
         type: r.Type,
         nullable: r.Null === 'YES',
         defaultValue: r.Default === null || r.Default === undefined ? null : String(r.Default),
+      }))
+    },
+    async listIndexes(table) {
+      const [rows] = await conn.query('SHOW INDEX FROM `' + table.replace(/`/g, '``') + '`')
+      const list = rows as Array<{
+        Key_name: string
+        Column_name: string
+        Non_unique: number
+        Seq_in_index: number
+      }>
+      const indexes = new Map<string, IndexInfo>()
+      for (const row of list) {
+        let info = indexes.get(row.Key_name)
+        if (!info) {
+          info = { name: row.Key_name, columns: [], unique: row.Non_unique === 0 }
+          indexes.set(row.Key_name, info)
+        }
+        info.columns.push(row.Column_name)
+      }
+      return [...indexes.values()]
+    },
+    async databaseInfo() {
+      const [rows] = await conn.query('SELECT VERSION() AS version, DATABASE() AS database, CURRENT_USER() AS user, NOW() AS server_time')
+      const list = rows as Array<{
+        version: string
+        database: string | null
+        user: string
+        server_time: string
+      }>
+      const row = list[0] ?? {}
+      return {
+        version: row.version ?? '',
+        database: row.database ?? '',
+        user: row.user ?? '',
+        serverTime: row.server_time ?? '',
+      }
+    },
+    async tableStats() {
+      const [rows] = await conn.query(
+        `SELECT TABLE_NAME AS table_name, TABLE_SCHEMA AS schema_name, TABLE_ROWS AS estimated_rows
+         FROM information_schema.tables
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = 'BASE TABLE'
+         ORDER BY estimated_rows DESC`,
+      )
+      const list = rows as Array<{
+        table_name: string
+        schema_name: string
+        estimated_rows: number | null
+      }>
+      return list.map<TableStat>(r => ({
+        table: r.table_name,
+        schema: r.schema_name,
+        estimatedRows: Number(r.estimated_rows ?? 0),
+      }))
+    },
+    async searchColumns(pattern) {
+      const [rows] = await conn.query(
+        `SELECT TABLE_NAME AS table_name, COLUMN_NAME AS column_name, DATA_TYPE AS data_type
+         FROM information_schema.columns
+         WHERE TABLE_SCHEMA = DATABASE() AND COLUMN_NAME LIKE ?
+         ORDER BY TABLE_NAME, ORDINAL_POSITION
+         LIMIT 100`,
+        [pattern],
+      )
+      const list = rows as Array<{
+        table_name: string
+        column_name: string
+        data_type: string
+      }>
+      return list.map<ColumnMatch>(r => ({
+        table: r.table_name,
+        column: r.column_name,
+        type: r.data_type,
       }))
     },
     async close() {

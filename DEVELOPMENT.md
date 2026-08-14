@@ -27,6 +27,17 @@
 
 **不在范围**：写操作（INSERT/UPDATE/DELETE/DDL）、多库连接、连接池管理界面。
 
+### 1.3 范围（v0.2，阶段 5）
+| 工具 | 功能 | 需凭据 |
+|---|---|---|
+| `sql_explain` | 查看查询执行计划（EXPLAIN），只读诊断 | 是 |
+| `sql_list_indexes` | 列出表的索引（名称/列/是否唯一） | 是 |
+| `sql_database_info` | 数据库版本、当前库、当前用户、服务器时间 | 是 |
+| `sql_table_stats` | 各表估算行数（PG reltuples / MySQL information_schema） | 是 |
+| `sql_search_columns` | 按列名模糊搜索表和列（ILIKE/LIKE，参数化） | 是 |
+
+**不在范围（v0.2）**：ANALYZE/VACUUM、写操作、跨库查询。
+
 ## 2. 技术背景（契约要点，同 dsh-tool-github 已验证）
 
 - `defineTool` 契约：参数自动校验、输出规范 JSON 值、`exec.signal` 透传、`presentCall`/`presentResult` 纯函数。
@@ -58,6 +69,13 @@
 - [x] README 中英、examples/cordis.yml、LICENSE
 - [x] 推送 GitHub（`LJH-snow/dsh-tool-sql`，PUBLIC + topics）
 
+### 阶段 5：v0.2 扩展（只读诊断与发现）
+- [x] `sql_explain`（复用 query 路径，EXPLAIN 前缀已在白名单）
+- [x] Driver 新增 `listIndexes`/`databaseInfo`/`tableStats`/`searchColumns` + PG/MySQL 实现
+- [x] 注册 5 个新工具 + UI 呈现
+- [x] 验收：mock 单测；typecheck；build
+- [x] README 双语更新 + 推送
+
 ## 4. 开发日志
 
 ### 2026-08-14（阶段 0）
@@ -77,6 +95,20 @@
 - package.json 补充 repository/homepage 指向新仓库。
 - git init + commit + 推送 `LJH-snow/dsh-tool-sql`（PUBLIC），添加 topics：dsh-plugin/deepseek-harness/cordis/sql/database/agent。
 
+### 2026-08-14（阶段 5 规划）
+- 规划 v0.2：新增 5 个只读工具（explain/索引/库信息/表统计/列搜索），全部保持只读安全模型。
+- 复用 `query` 路径实现 explain（EXPLAIN 前缀已白名单，EXPLAIN + 写语句会被黑名单拒绝）。
+
+### 2026-08-14（阶段 5 实现）
+- Driver 接口新增 `listIndexes`/`databaseInfo`/`tableStats`/`searchColumns`，PG/MySQL 双驱动实现。
+  - PG 索引查询用 `pg_index` + `unnest(ix.indkey)` 拆列名；MySQL 用 `SHOW INDEX` 按 `Key_name` 分组。
+  - 表统计均为优化器估算值（PG `reltuples` / MySQL `TABLE_ROWS`），输出标注 estimated。
+  - 列搜索 ILIKE/LIKE 参数化，`DbClient` 统一把裸 pattern 包成 `%pattern%`，LIMIT 100。
+- 注册 5 个新工具：`sql_explain`/`sql_list_indexes`/`sql_database_info`/`sql_table_stats`/`sql_search_columns`（共 8 工具）。
+- `sql_explain` 自动补 `EXPLAIN ` 前缀（已以 explain 开头则不重复），写语句仍被 assertReadOnly 拒绝。
+- 测试增至 41/41（client 19 + tools 22）；typecheck / build 全绿。
+- 踩坑：mysql2 `conn.query<T>` 泛型要求 `RowDataPacket` 约束，自定义对象数组改 `as` 断言；render 推断属性可选需 `?? []` 兜底。
+
 ## 5. 风险与决策记录
 
 | 时间 | 决策/风险 | 说明 |
@@ -85,4 +117,5 @@
 | 2026-08-14 | 只读白名单校验 | 简单可靠：前缀白名单 + 写关键字黑名单 |
 | 2026-08-14 | pg/mysql2 暂放 dependencies | GitHub 安装开箱即用；日后发布 npm 前再评估转 optionalDependencies |
 | 2026-08-14 | 黑名单可能误伤字符串字面量 | 如 `WHERE action = 'delete'` 会被拒绝——安全优先，宁可误杀 |
+| 2026-08-14 | 表统计为估算值 | reltuples / TABLE_ROWS 是优化器近似值，输出标注 estimated |
 | 2026-08-14 | 风险：npm 发布受 2FA 限制 | 同 dsh-tool-github，先 GitHub 安装方式 |
