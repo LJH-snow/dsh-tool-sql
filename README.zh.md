@@ -63,6 +63,10 @@ npm install /path/to/dsh-tool-sql
 | `sql_database_info` | 数据库信息（版本/当前库/当前用户/服务器时间） |
 | `sql_table_stats` | 各表估算行数（近似值，从大到小） |
 | `sql_search_columns` | 按列名跨表搜索（支持 `%`/`_`，最多 100 条） |
+| `sql_ping` | 连接测试（`SELECT 1`，返回往返延迟） |
+| `sql_list_views` | 列出视图及定义 |
+| `sql_table_size` | 表占用空间（数据/索引/合计字节） |
+| `sql_get_schema` | 查看建表 DDL（MySQL：服务器原样；PostgreSQL：catalog 生成简化版） |
 
 ## 开发
 

@@ -63,6 +63,10 @@ Full example: [examples/cordis.yml](examples/cordis.yml).
 | `sql_database_info` | Database server info (version, current database, user, server time) |
 | `sql_table_stats` | Per-table estimated row counts, largest first |
 | `sql_search_columns` | Search columns by name across tables (supports `%`/`_`, up to 100) |
+| `sql_ping` | Test the connection with `SELECT 1`, report round-trip latency |
+| `sql_list_views` | List views with their definitions |
+| `sql_table_size` | Table disk usage (data, index, total bytes) |
+| `sql_get_schema` | `CREATE TABLE` DDL (MySQL: server DDL; PostgreSQL: simplified from catalog) |
 
 ## Development
 

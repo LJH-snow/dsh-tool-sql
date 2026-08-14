@@ -1,4 +1,5 @@
-import type { Driver, DbConfig, ColumnInfo, IndexInfo, DatabaseInfo, TableStat, ColumnMatch } from '../client.js'
+import type { Driver, DbConfig, ColumnInfo, IndexInfo, DatabaseInfo, TableStat, ColumnMatch, ViewInfo, TableSize, SchemaInfo } from '../client.js'
+import { SqlError } from '../client.js'
 
 export async function createPostgresDriver(config: DbConfig): Promise<Driver> {
   const pg = await import('pg')
@@ -125,6 +126,53 @@ export async function createPostgresDriver(config: DbConfig): Promise<Driver> {
         column: r.column_name,
         type: r.data_type,
       }))
+    },
+    async listViews() {
+      const result = await client.query<{ name: string; definition: string | null }>(
+        `SELECT viewname AS name, definition FROM pg_views WHERE schemaname = 'public' ORDER BY viewname`,
+      )
+      return result.rows.map<ViewInfo>(r => ({ name: r.name, definition: r.definition }))
+    },
+    async tableSize(table) {
+      const result = await client.query<{ total: string; data: string; index: string }>(
+        `SELECT pg_total_relation_size($1) AS total, pg_relation_size($1) AS data, pg_indexes_size($1) AS index`,
+        [table],
+      )
+      const row = result.rows[0]
+      return {
+        table,
+        dataBytes: Number(row?.data ?? 0),
+        indexBytes: Number(row?.index ?? 0),
+        totalBytes: Number(row?.total ?? 0),
+      }
+    },
+    async getSchema(table) {
+      const result = await client.query<{
+        column_name: string
+        data_type: string
+        character_maximum_length: number | null
+        is_nullable: string
+        column_default: string | null
+      }>(
+        `SELECT column_name, data_type, character_maximum_length, is_nullable, column_default
+         FROM information_schema.columns
+         WHERE table_schema = 'public' AND table_name = $1
+         ORDER BY ordinal_position`,
+        [table],
+      )
+      if (result.rows.length === 0) {
+        throw new SqlError(`Table "${table}" not found in public schema.`, 'query')
+      }
+      const lines = result.rows.map(r => {
+        let type = r.data_type
+        if (r.character_maximum_length) type += `(${r.character_maximum_length})`
+        const parts = [`  ${r.column_name} ${type}`]
+        if (r.is_nullable === 'NO') parts.push('NOT NULL')
+        if (r.column_default !== null) parts.push(`DEFAULT ${r.column_default}`)
+        return parts.join(' ')
+      })
+      const ddl = `CREATE TABLE public.${table} (\n${lines.join(',\n')}\n);`
+      return { table, ddl, simplified: true }
     },
     async close() {
       await client.end()

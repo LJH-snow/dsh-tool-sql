@@ -27,6 +27,9 @@ function mockDriver(overrides: Partial<Driver> = {}): Driver {
     databaseInfo: vi.fn(async () => ({ version: 'PostgreSQL 16', database: 'db', user: 'u', serverTime: '2026-08-14T00:00:00Z' })),
     tableStats: vi.fn(async () => [{ table: 'users', schema: 'public', estimatedRows: 100 }]),
     searchColumns: vi.fn(async () => [{ table: 'users', column: 'user_id', type: 'integer' }]),
+    listViews: vi.fn(async () => [{ name: 'active_users', definition: 'SELECT * FROM users WHERE active' }]),
+    tableSize: vi.fn(async () => ({ table: 'users', dataBytes: 1024, indexBytes: 512, totalBytes: 1536 })),
+    getSchema: vi.fn(async () => ({ table: 'users', ddl: 'CREATE TABLE users (id integer);', simplified: true })),
     close: vi.fn(async () => {}),
     ...overrides,
   }
@@ -40,10 +43,14 @@ describe('tool definitions', () => {
       'sql_database_info',
       'sql_describe_table',
       'sql_explain',
+      'sql_get_schema',
       'sql_list_indexes',
       'sql_list_tables',
+      'sql_list_views',
+      'sql_ping',
       'sql_query',
       'sql_search_columns',
+      'sql_table_size',
       'sql_table_stats',
     ])
   })
@@ -113,6 +120,10 @@ describe('tool definitions', () => {
     await expect(indexes.execute({} as never, exec())).rejects.toThrow()
     const search = tools()['sql_search_columns']
     await expect(search.execute({} as never, exec())).rejects.toThrow()
+    const size = tools()['sql_table_size']
+    await expect(size.execute({} as never, exec())).rejects.toThrow()
+    const schema = tools()['sql_get_schema']
+    await expect(schema.execute({} as never, exec())).rejects.toThrow()
   })
 
   it('sql_explain prefixes EXPLAIN when missing and passes read-only check', async () => {
@@ -181,6 +192,44 @@ describe('tool definitions', () => {
     })
     expect(JSON.stringify(blocks)).toContain('users.user_id')
   })
+
+  it('sql_ping returns ok and renders latency', async () => {
+    const tool = tools()['sql_ping']
+    const result = await tool.execute({}, exec())
+    expect(result).toMatchObject({ ok: true })
+    const blocks = (tool.output as { render: (a: unknown, v: any) => unknown }).render({}, { ok: true, latencyMs: 42 })
+    expect(JSON.stringify(blocks)).toContain('42 ms')
+  })
+
+  it('sql_list_views returns views and renders definitions', async () => {
+    const tool = tools()['sql_list_views']
+    const result = await tool.execute({}, exec())
+    expect(result).toEqual({ views: [{ name: 'active_users', definition: 'SELECT * FROM users WHERE active' }] })
+    const blocks = (tool.output as { render: (a: unknown, v: any) => unknown }).render({}, {
+      views: [{ name: 'active_users', definition: 'SELECT * FROM users WHERE active' }],
+    })
+    expect(JSON.stringify(blocks)).toContain('active_users: SELECT * FROM users WHERE active')
+  })
+
+  it('sql_table_size returns sizes and renders human-readable units', async () => {
+    const tool = tools()['sql_table_size']
+    const result = await tool.execute({ table: 'users' }, exec())
+    expect(result).toEqual({ table: 'users', dataBytes: 1024, indexBytes: 512, totalBytes: 1536 })
+    const blocks = (tool.output as { render: (a: unknown, v: any) => unknown }).render({ table: 'users' }, {
+      table: 'users', dataBytes: 1536, indexBytes: 1024, totalBytes: 2560,
+    })
+    expect(JSON.stringify(blocks)).toContain('KiB')
+  })
+
+  it('sql_get_schema returns DDL and renders it', async () => {
+    const tool = tools()['sql_get_schema']
+    const result = await tool.execute({ table: 'users' }, exec())
+    expect(result).toEqual({ table: 'users', ddl: 'CREATE TABLE users (id integer);', simplified: true })
+    const blocks = (tool.output as { render: (a: unknown, v: any) => unknown }).render({ table: 'users' }, {
+      table: 'users', ddl: 'CREATE TABLE users (id integer);', simplified: true,
+    })
+    expect(JSON.stringify(blocks)).toContain('CREATE TABLE users')
+  })
 })
 
 describe('tool presentation (pure render intents)', () => {
@@ -242,5 +291,33 @@ describe('tool presentation (pure render intents)', () => {
     const args = { pattern: 'user' }
     expect(t.presentCall(args)).toMatchObject({ card: 'generic', kind: 'search', title: 'Search columns: user' })
     expect(t.presentResult(args, { matches: [{ table: 't', column: 'c' }] })).toMatchObject({ title: '1 column(s)' })
+  })
+
+  it('sql_ping pending and result cards', () => {
+    const t = defs()['sql_ping'] as any
+    expect(t.presentCall({})).toMatchObject({ card: 'generic', kind: 'read', title: 'Ping database' })
+    expect(t.presentResult({}, { ok: true, latencyMs: 12 })).toMatchObject({ title: 'OK (12 ms)' })
+    expect(t.presentResult({}, { ok: false })).toMatchObject({ title: 'Failed' })
+  })
+
+  it('sql_list_views pending and result cards', () => {
+    const t = defs()['sql_list_views'] as any
+    expect(t.presentCall({})).toMatchObject({ card: 'generic', kind: 'read', title: 'List views' })
+    expect(t.presentResult({}, { views: [{}, {}] })).toMatchObject({ title: '2 view(s)' })
+  })
+
+  it('sql_table_size pending and result cards', () => {
+    const t = defs()['sql_table_size'] as any
+    const args = { table: 'users' }
+    expect(t.presentCall(args)).toMatchObject({ card: 'generic', kind: 'read', title: 'Size of users' })
+    expect(t.presentResult(args, { table: 'users', totalBytes: 2560 })).toMatchObject({ title: 'Size: users' })
+  })
+
+  it('sql_get_schema pending and result cards', () => {
+    const t = defs()['sql_get_schema'] as any
+    const args = { table: 'users' }
+    expect(t.presentCall(args)).toMatchObject({ card: 'generic', kind: 'read', title: 'Schema of users' })
+    expect(t.presentResult(args, { table: 'users', simplified: true })).toMatchObject({ title: 'Schema: users (simplified)' })
+    expect(t.presentResult(args, { table: 'users', simplified: false })).toMatchObject({ title: 'Schema: users' })
   })
 })

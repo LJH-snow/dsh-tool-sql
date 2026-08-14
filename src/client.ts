@@ -59,6 +59,30 @@ export interface ColumnMatch {
   type: string
 }
 
+export interface ViewInfo {
+  name: string
+  definition: string | null
+}
+
+export interface TableSize {
+  table: string
+  dataBytes: number
+  indexBytes: number
+  totalBytes: number
+}
+
+export interface SchemaInfo {
+  table: string
+  ddl: string
+  /** True when the DDL was generated from catalog metadata (PostgreSQL) rather than the server's own output. */
+  simplified: boolean
+}
+
+export interface PingResult {
+  ok: boolean
+  latencyMs: number
+}
+
 /** SQL driver adapter; implementations live in drivers/* and are dynamically imported. */
 export interface Driver {
   query(sql: string, signal?: AbortSignal): Promise<{ columns: string[]; rows: Array<Record<string, unknown>> }>
@@ -68,6 +92,9 @@ export interface Driver {
   databaseInfo(signal?: AbortSignal): Promise<DatabaseInfo>
   tableStats(signal?: AbortSignal): Promise<TableStat[]>
   searchColumns(pattern: string, signal?: AbortSignal): Promise<ColumnMatch[]>
+  listViews(signal?: AbortSignal): Promise<ViewInfo[]>
+  tableSize(table: string, signal?: AbortSignal): Promise<TableSize>
+  getSchema(table: string, signal?: AbortSignal): Promise<SchemaInfo>
   close(): Promise<void>
 }
 
@@ -196,6 +223,42 @@ export class DbClient {
     try {
       const normalized = pattern.includes('%') ? pattern : `%${pattern}%`
       return await driver.searchColumns(normalized, this.combinedSignal(signal))
+    } catch (error) {
+      if (error instanceof SqlError) throw error
+      throw new SqlError(error instanceof Error ? error.message : String(error), 'query')
+    }
+  }
+
+  async ping(signal?: AbortSignal): Promise<PingResult> {
+    const start = performance.now()
+    await this.query('SELECT 1', signal)
+    return { ok: true, latencyMs: Math.round(performance.now() - start) }
+  }
+
+  async listViews(signal?: AbortSignal): Promise<ViewInfo[]> {
+    const driver = await this.getDriver()
+    try {
+      return await driver.listViews(this.combinedSignal(signal))
+    } catch (error) {
+      if (error instanceof SqlError) throw error
+      throw new SqlError(error instanceof Error ? error.message : String(error), 'query')
+    }
+  }
+
+  async tableSize(table: string, signal?: AbortSignal): Promise<TableSize> {
+    const driver = await this.getDriver()
+    try {
+      return await driver.tableSize(table, this.combinedSignal(signal))
+    } catch (error) {
+      if (error instanceof SqlError) throw error
+      throw new SqlError(error instanceof Error ? error.message : String(error), 'query')
+    }
+  }
+
+  async getSchema(table: string, signal?: AbortSignal): Promise<SchemaInfo> {
+    const driver = await this.getDriver()
+    try {
+      return await driver.getSchema(table, this.combinedSignal(signal))
     } catch (error) {
       if (error instanceof SqlError) throw error
       throw new SqlError(error instanceof Error ? error.message : String(error), 'query')

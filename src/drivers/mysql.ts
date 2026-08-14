@@ -1,4 +1,4 @@
-import type { Driver, DbConfig, ColumnInfo, IndexInfo, DatabaseInfo, TableStat, ColumnMatch } from '../client.js'
+import type { Driver, DbConfig, ColumnInfo, IndexInfo, DatabaseInfo, TableStat, ColumnMatch, ViewInfo, TableSize, SchemaInfo } from '../client.js'
 
 export async function createMysqlDriver(config: DbConfig): Promise<Driver> {
   const mysql = await import('mysql2/promise')
@@ -111,6 +111,38 @@ export async function createMysqlDriver(config: DbConfig): Promise<Driver> {
         column: r.column_name,
         type: r.data_type,
       }))
+    },
+    async listViews() {
+      const [rows] = await conn.query(
+        `SELECT TABLE_NAME AS name, VIEW_DEFINITION AS definition
+         FROM information_schema.views
+         WHERE TABLE_SCHEMA = DATABASE()
+         ORDER BY TABLE_NAME`,
+      )
+      const list = rows as Array<{ name: string; definition: string | null }>
+      return list.map<ViewInfo>(r => ({ name: r.name, definition: r.definition }))
+    },
+    async tableSize(table) {
+      const [rows] = await conn.query(
+        `SELECT DATA_LENGTH AS data, INDEX_LENGTH AS idx
+         FROM information_schema.tables
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?`,
+        [table],
+      )
+      const list = rows as Array<{ data: number | null; idx: number | null }>
+      const row = list[0]
+      const dataBytes = Number(row?.data ?? 0)
+      const indexBytes = Number(row?.idx ?? 0)
+      return { table, dataBytes, indexBytes, totalBytes: dataBytes + indexBytes }
+    },
+    async getSchema(table) {
+      const [rows] = await conn.query('SHOW CREATE TABLE `' + table.replace(/`/g, '``') + '`')
+      const list = rows as Array<{ [key: string]: string }>
+      const row = list[0]
+      if (!row) throw new Error(`Table "${table}" not found.`)
+      const ddlKey = Object.keys(row).find(k => k.toLowerCase() === 'create table')
+      const ddl = ddlKey ? row[ddlKey] : ''
+      return { table, ddl, simplified: false }
     },
     async close() {
       await conn.end()

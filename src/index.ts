@@ -399,6 +399,147 @@ export function createTools(client: DbClient) {
         return { matches: await client.searchColumns(args.pattern, exec.signal) }
       },
     }),
+
+    defineTool({
+      name: 'sql_ping',
+      description: 'Test the database connection with SELECT 1 and report round-trip latency in milliseconds.',
+      parameters: {},
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            ok: { type: 'boolean', description: 'Whether the connection succeeded' },
+            latencyMs: { type: 'integer', description: 'Round-trip latency in milliseconds' },
+          },
+        },
+        render: (_args, value) => {
+          return [{ type: 'text', text: value.ok ? `Connection OK (${value.latencyMs} ms)` : 'Connection failed.' }]
+        },
+      },
+      presentCall(): ToolCallView {
+        return { card: 'generic', title: `Ping database`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { ok?: boolean; latencyMs?: number }
+        return { card: 'generic', title: v.ok ? `OK (${v.latencyMs ?? 0} ms)` : 'Failed' }
+      },
+      async execute(_args, exec) {
+        return await client.ping(exec.signal)
+      },
+    }),
+
+    defineTool({
+      name: 'sql_list_views',
+      description: 'List views in the database (PostgreSQL: public schema; MySQL: current database), with definitions.',
+      parameters: {},
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            views: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  name: { type: 'string', description: 'View name' },
+                  definition: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'View definition SQL' },
+                },
+              },
+              description: 'Views',
+            },
+          },
+        },
+        render: (_args, value) => {
+          const views = value.views ?? []
+          if (views.length === 0) return [{ type: 'text', text: '(no views)' }]
+          const lines = views.map(v => v.definition ? `${v.name}: ${v.definition}` : v.name)
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(): ToolCallView {
+        return { card: 'generic', title: `List views`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { views?: unknown[] }
+        return { card: 'generic', title: `${v.views?.length ?? 0} view(s)` }
+      },
+      async execute(_args, exec) {
+        return { views: await client.listViews(exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_table_size',
+      description: 'Show a table\'s disk usage: data size, index size, and total in bytes.',
+      parameters: {
+        table: { type: 'string', required: true, description: 'Table name' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            table: { type: 'string', description: 'Table name' },
+            dataBytes: { type: 'integer', description: 'Data size in bytes' },
+            indexBytes: { type: 'integer', description: 'Index size in bytes' },
+            totalBytes: { type: 'integer', description: 'Total size in bytes' },
+          },
+        },
+        render: (_args, value) => {
+          const fmt = (n: number) => {
+            if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(2)} GiB`
+            if (n >= 1024 ** 2) return `${(n / 1024 ** 2).toFixed(2)} MiB`
+            if (n >= 1024) return `${(n / 1024).toFixed(2)} KiB`
+            return `${n} B`
+          }
+          return [{ type: 'text', text: `data: ${fmt(value.dataBytes ?? 0)}\nindex: ${fmt(value.indexBytes ?? 0)}\ntotal: ${fmt(value.totalBytes ?? 0)}` }]
+        },
+      },
+      presentCall(args): ToolCallView {
+        return { card: 'generic', title: `Size of ${args.table}`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { table?: string; totalBytes?: number }
+        return { card: 'generic', title: `Size: ${v.table ?? ''}`, content: [{ type: 'text', text: `${v.totalBytes ?? 0} bytes` }] }
+      },
+      async execute(args, exec) {
+        return await client.tableSize(args.table, exec.signal)
+      },
+    }),
+
+    defineTool({
+      name: 'sql_get_schema',
+      description:
+        'Show the CREATE TABLE DDL for a table. MySQL returns the server\'s own DDL; PostgreSQL returns a simplified DDL generated from catalog metadata (columns, types, NOT NULL, defaults). Read-only: never executes DDL.',
+      parameters: {
+        table: { type: 'string', required: true, description: 'Table name' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            table: { type: 'string', description: 'Table name' },
+            ddl: { type: 'string', description: 'CREATE TABLE statement' },
+            simplified: { type: 'boolean', description: 'True when the DDL is a simplified catalog-generated version (PostgreSQL)' },
+          },
+        },
+        render: (_args, value) => [{ type: 'text', text: value.ddl ?? '' }],
+      },
+      presentCall(args): ToolCallView {
+        return { card: 'generic', title: `Schema of ${args.table}`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { table?: string; simplified?: boolean }
+        return { card: 'generic', title: `Schema: ${v.table ?? ''}${v.simplified ? ' (simplified)' : ''}` }
+      },
+      async execute(args, exec) {
+        return await client.getSchema(args.table, exec.signal)
+      },
+    }),
   ]
 }
 

@@ -38,6 +38,16 @@
 
 **不在范围（v0.2）**：ANALYZE/VACUUM、写操作、跨库查询。
 
+### 1.4 范围（v0.3，阶段 6）
+| 工具 | 功能 | 需凭据 |
+|---|---|---|
+| `sql_ping` | 连接测试：SELECT 1 + 延迟毫秒 | 是 |
+| `sql_list_views` | 列出视图（PG：pg_views；MySQL：information_schema.views） | 是 |
+| `sql_table_size` | 表大小：数据/索引/合计字节（PG：pg_total_relation_size；MySQL：data_length+index_length） | 是 |
+| `sql_get_schema` | 查看建表 DDL（MySQL：SHOW CREATE TABLE；PG：由 information_schema 生成简化 CREATE TABLE） | 是 |
+
+**不在范围（v0.3）**：写操作、执行 DDL、跨库查询。
+
 ## 2. 技术背景（契约要点，同 dsh-tool-github 已验证）
 
 - `defineTool` 契约：参数自动校验、输出规范 JSON 值、`exec.signal` 透传、`presentCall`/`presentResult` 纯函数。
@@ -76,6 +86,13 @@
 - [x] 验收：mock 单测；typecheck；build
 - [x] README 双语更新 + 推送
 
+### 阶段 6：v0.3 扩展（连接与结构）
+- [x] `sql_ping`：SELECT 1 + 延迟
+- [x] Driver 新增 `listViews`/`tableSize`/`getSchema` + PG/MySQL 实现
+- [x] 注册 4 个新工具 + UI 呈现
+- [x] 验收：mock 单测；typecheck；build
+- [x] README 双语更新 + 推送
+
 ## 4. 开发日志
 
 ### 2026-08-14（阶段 0）
@@ -109,6 +126,19 @@
 - 测试增至 41/41（client 19 + tools 22）；typecheck / build 全绿。
 - 踩坑：mysql2 `conn.query<T>` 泛型要求 `RowDataPacket` 约束，自定义对象数组改 `as` 断言；render 推断属性可选需 `?? []` 兜底。
 
+### 2026-08-14（阶段 6 规划）
+- 规划 v0.3：新增 4 个工具（ping/视图/表大小/建表 DDL），全部只读。
+- `sql_get_schema` 的 PG 端用 information_schema 生成简化 CREATE TABLE（不执行 DDL，纯展示）。
+
+### 2026-08-14（阶段 6 实现）
+- Driver 接口新增 `listViews`/`tableSize`/`getSchema`，PG/MySQL 双驱动实现。
+  - PG 视图：`pg_views`；MySQL：`information_schema.views`（含 VIEW_DEFINITION）。
+  - PG 表大小：`pg_total_relation_size`/`pg_relation_size`/`pg_indexes_size`；MySQL：`DATA_LENGTH`+`INDEX_LENGTH`。
+  - PG 建表 DDL：由 information_schema.columns 生成简化 CREATE TABLE（列/类型+长度/NOT NULL/DEFAULT），标注 simplified；MySQL：`SHOW CREATE TABLE` 原样返回。
+- 注册 4 个新工具：`sql_ping`/`sql_list_views`/`sql_table_size`/`sql_get_schema`（共 12 工具）。
+- `sql_ping` 在 client 层用 `performance.now()` 计时 + `SELECT 1`，不新增驱动方法。
+- 测试增至 54/54（client 24 + tools 30）；typecheck / build 全绿。
+
 ## 5. 风险与决策记录
 
 | 时间 | 决策/风险 | 说明 |
@@ -118,4 +148,5 @@
 | 2026-08-14 | pg/mysql2 暂放 dependencies | GitHub 安装开箱即用；日后发布 npm 前再评估转 optionalDependencies |
 | 2026-08-14 | 黑名单可能误伤字符串字面量 | 如 `WHERE action = 'delete'` 会被拒绝——安全优先，宁可误杀 |
 | 2026-08-14 | 表统计为估算值 | reltuples / TABLE_ROWS 是优化器近似值，输出标注 estimated |
+| 2026-08-14 | PG 建表 DDL 为简化生成 | 不保证与 pg_dump 完全一致（不含约束/权限），明确标注 simplified |
 | 2026-08-14 | 风险：npm 发布受 2FA 限制 | 同 dsh-tool-github，先 GitHub 安装方式 |
