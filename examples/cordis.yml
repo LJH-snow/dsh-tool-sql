@@ -1,0 +1,23 @@
+# dsh-tool-sql 组合示例
+# 用法：在 dsh 的组合配置中引入本插件（示例片段，按你的部署组合调整）
+#
+# 方式一：从 GitHub 直接加载（无需发布 npm）
+- name: 'github:LJH-snow/dsh-tool-sql'
+# 方式二：发布到 npm 后
+# - name: '@libai168/dsh-tool-sql'
+  config:
+    # 数据库类型：postgres 或 mysql
+    type: 'postgres'
+    host: 'localhost'
+    # 端口（可选，postgres 默认 5432，mysql 默认 3306）
+    # port: 5432
+    user: 'dbuser'
+    # 密码只从这里读取，绝不打印/写日志
+    password: 'dbpass'
+    database: 'appdb'
+    # 单次查询最大返回行数（可选，默认 100）
+    # maxRows: 100
+    # 查询超时（毫秒，可选，默认 15000）
+    # timeoutMs: 15000
+    # 启用 TLS（可选，默认 false）
+    # ssl: false
