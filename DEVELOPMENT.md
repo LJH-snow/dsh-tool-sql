@@ -59,6 +59,15 @@
 
 **不在范围（v0.4）**：写操作、执行 DDL、跨库查询。
 
+### 1.6 范围（v0.5，阶段 8）
+| 工具 | 功能 | 需凭据 |
+|---|---|---|
+| `sql_query`（增强） | 新增可选 `limit` 参数（1-1000，默认 maxRows），模型可直接控制返回行数 | 是 |
+| `sql_list_extensions` | 列出数据库扩展/插件（PG：pg_extension；MySQL：不支持返回空并说明） | 是 |
+| CI | GitHub Actions：node 22 上 typecheck + test + build，README 徽章 | - |
+
+**不在范围（v0.5）**：写操作、执行 DDL、跨库查询。
+
 ## 2. 技术背景（契约要点，同 dsh-tool-github 已验证）
 
 - `defineTool` 契约：参数自动校验、输出规范 JSON 值、`exec.signal` 透传、`presentCall`/`presentResult` 纯函数。
@@ -110,6 +119,12 @@
 - [x] 注册 5 个新工具 + UI 呈现
 - [x] 验收：mock 单测；typecheck；build
 - [x] README 双语更新 + 推送
+
+### 阶段 8：v0.5 增强（查询控制 + 扩展 + CI）
+- [x] `sql_query` 新增 `limit` 参数（1-1000，默认 maxRows），`DbClient.query` 支持行数覆盖
+- [x] Driver 新增 `listExtensions`（PG：pg_extension；MySQL：空 + 提示）
+- [x] GitHub Actions CI：node 22 上 typecheck + test + build
+- [x] README 双语更新（工具表 + 徽章）+ 推送
 
 ## 4. 开发日志
 
@@ -172,6 +187,16 @@
 - 测试增至 69/69（client 28 + tools 41）；typecheck / build 全绿。
 - 踩坑：驱动对象方法内 `this` 在闭包中不可靠（MySQL `this.getSchema` 类型推断失败），统一改为内部闭包函数。
 
+### 2026-08-14（阶段 8 规划）
+- 规划 v0.5：`sql_query` 加 `limit` 参数（模型控制行数，钳制 1-1000，默认 maxRows）；新增 `sql_list_extensions`；补 GitHub Actions CI。
+
+### 2026-08-14（阶段 8 实现）
+- `DbClient.query(sql, signal, maxRowsOverride?)`：覆盖行数与 maxRows 取较小值，截断逻辑复用。
+- `DbClient` 增加公开 `databaseType` 属性（供工具判断 PG/MySQL 能力差异）。
+- `sql_query` 新增可选 `limit`（1-1000）；`sql_list_extensions`：PG 返回 `pg_extension` 列表（含版本），MySQL 返回 `{ supported: false, extensions: [] }` 并渲染提示。
+- 新增 `.github/workflows/ci.yml`：ubuntu + node 22，`npm ci` + typecheck + test + build；README 中英加 CI 徽章。
+- 测试增至 76/76（client 30 + tools 46）；typecheck / build 全绿。
+
 ## 5. 风险与决策记录
 
 | 时间 | 决策/风险 | 说明 |
@@ -184,4 +209,6 @@
 | 2026-08-14 | PG 建表 DDL 为简化生成 | 不保证与 pg_dump 完全一致（不含约束/权限），明确标注 simplified |
 | 2026-08-14 | preview 表名严格校验 | 只允许字母数字下划线，杜绝表名拼接注入；非法表名直接拒绝 |
 | 2026-08-14 | schema_dump 体量可控 | 表 DDL 简化生成 + 视图定义，不含触发器/函数定义（用专门工具查） |
+| 2026-08-14 | query limit 钳制 1-1000 | 与 maxRows 取较小值，避免模型请求超大结果集 |
+| 2026-08-14 | MySQL 无扩展概念 | `sql_list_extensions` 在 MySQL 返回空列表 + unsupported 说明 |
 | 2026-08-14 | 风险：npm 发布受 2FA 限制 | 同 dsh-tool-github，先 GitHub 安装方式 |

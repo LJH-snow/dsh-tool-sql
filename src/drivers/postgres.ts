@@ -1,4 +1,4 @@
-import type { Driver, DbConfig, ColumnInfo, IndexInfo, DatabaseInfo, TableStat, ColumnMatch, ViewInfo, TableSize, SchemaInfo, FunctionInfo, TriggerInfo, ForeignKeyInfo, SchemaDump } from '../client.js'
+import type { Driver, DbConfig, ColumnInfo, IndexInfo, DatabaseInfo, TableStat, ColumnMatch, ViewInfo, TableSize, SchemaInfo, FunctionInfo, TriggerInfo, ForeignKeyInfo, SchemaDump, ExtensionInfo } from '../client.js'
 import { SqlError, assertSafeIdentifier } from '../client.js'
 
 export async function createPostgresDriver(config: DbConfig): Promise<Driver> {
@@ -277,9 +277,14 @@ export async function createPostgresDriver(config: DbConfig): Promise<Driver> {
           .map(v => ({ name: v.name, definition: v.definition })),
       } as SchemaDump
     },
+    async listExtensions() {
+      const result = await client.query<{ name: string; version: string }>(
+        `SELECT extname AS name, extversion AS version FROM pg_extension ORDER BY extname`,
+      )
+      return result.rows.map<ExtensionInfo>(r => ({ name: r.name, version: r.version }))
+    },
     async close() {
       await client.end()
     },
   }
 }
-

@@ -70,6 +70,7 @@ function mockDriver(overrides: Partial<Driver> = {}): Driver {
       tables: [{ table: 'users', ddl: 'CREATE TABLE users (id integer);', simplified: true }],
       views: [{ name: 'active_users', definition: 'SELECT * FROM users' }],
     })),
+    listExtensions: vi.fn(async () => [{ name: 'pg_trgm', version: '1.6' }]),
     close: vi.fn(async () => {}),
     ...overrides,
   }
@@ -254,5 +255,19 @@ describe('DbClient v0.2 methods', () => {
     const dump = await client.schemaDump()
     expect(dump.tables).toHaveLength(1)
     expect(dump.views[0]).toMatchObject({ name: 'active_users' })
+  })
+
+  it('query honors a maxRows override smaller than the configured max', async () => {
+    const rows = Array.from({ length: 50 }, (_, i) => ({ id: i }))
+    const driver = mockDriver({ query: vi.fn(async () => ({ columns: ['id'], rows })) })
+    const client = makeClient(driver, { maxRows: 100 })
+    const result = await client.query('SELECT * FROM users', undefined, 10)
+    expect(result.rows).toHaveLength(10)
+    expect(result.truncated).toBe(true)
+  })
+
+  it('listExtensions returns extension info', async () => {
+    const client = makeClient(mockDriver())
+    expect(await client.listExtensions()).toEqual([{ name: 'pg_trgm', version: '1.6' }])
   })
 })

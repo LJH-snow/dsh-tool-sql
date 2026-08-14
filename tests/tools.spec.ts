@@ -38,6 +38,7 @@ function mockDriver(overrides: Partial<Driver> = {}): Driver {
       tables: [{ table: 'users', ddl: 'CREATE TABLE users (id integer);', simplified: true }],
       views: [{ name: 'active_users', definition: 'SELECT * FROM users' }],
     })),
+    listExtensions: vi.fn(async () => [{ name: 'pg_trgm', version: '1.6' }]),
     close: vi.fn(async () => {}),
     ...overrides,
   }
@@ -52,6 +53,7 @@ describe('tool definitions', () => {
       'sql_describe_table',
       'sql_explain',
       'sql_get_schema',
+      'sql_list_extensions',
       'sql_list_foreign_keys',
       'sql_list_functions',
       'sql_list_indexes',
@@ -309,6 +311,38 @@ describe('tool definitions', () => {
     expect(text).toContain('CREATE TABLE users')
     expect(text).toContain('CREATE VIEW active_users')
   })
+
+  it('sql_query passes an explicit limit to the client', async () => {
+    const driver = mockDriver()
+    const client = makeClient(driver)
+    const tool = createTools(client).find(t => t.name === 'sql_query')!
+    await tool.execute({ sql: 'SELECT * FROM users', limit: 5 }, exec())
+    expect(driver.query).toHaveBeenCalled()
+  })
+
+  it('sql_query clamps limit to 1-1000', async () => {
+    const driver = mockDriver()
+    const client = makeClient(driver)
+    const tool = createTools(client).find(t => t.name === 'sql_query')!
+    await tool.execute({ sql: 'SELECT * FROM users', limit: 99999 }, exec())
+    expect(driver.query).toHaveBeenCalledWith('SELECT * FROM users', expect.anything())
+  })
+
+  it('sql_list_extensions returns supported:true and extensions on postgres', async () => {
+    const client = makeClient(mockDriver())
+    const tool = createTools(client).find(t => t.name === 'sql_list_extensions')!
+    const result = await tool.execute({}, exec())
+    expect(result).toEqual({ supported: true, extensions: [{ name: 'pg_trgm', version: '1.6' }] })
+  })
+
+  it('sql_list_extensions reports not supported on mysql', async () => {
+    const client = new DbClient({
+      type: 'mysql', host: 'localhost', user: 'u', password: 'p', database: 'db',
+    }, mockDriver())
+    const tool = createTools(client).find(t => t.name === 'sql_list_extensions')!
+    const result = await tool.execute({}, exec())
+    expect(result).toEqual({ supported: false, extensions: [] })
+  })
 })
 
 describe('tool presentation (pure render intents)', () => {
@@ -429,5 +463,12 @@ describe('tool presentation (pure render intents)', () => {
     const t = defs()['sql_schema_dump'] as any
     expect(t.presentCall({})).toMatchObject({ card: 'generic', kind: 'read', title: 'Dump schema' })
     expect(t.presentResult({}, { tables: [{}], views: [{}] })).toMatchObject({ title: '1 table(s) · 1 view(s)' })
+  })
+
+  it('sql_list_extensions pending and result cards', () => {
+    const t = defs()['sql_list_extensions'] as any
+    expect(t.presentCall({})).toMatchObject({ card: 'generic', kind: 'read', title: 'List extensions' })
+    expect(t.presentResult({}, { supported: true, extensions: [{}, {}] })).toMatchObject({ title: '2 extension(s)' })
+    expect(t.presentResult({}, { supported: false, extensions: [] })).toMatchObject({ title: 'Not supported' })
   })
 })

@@ -2,6 +2,8 @@
 
 [English](README.md) | 中文
 
+[![CI](https://github.com/LJH-snow/dsh-tool-sql/actions/workflows/ci.yml/badge.svg)](https://github.com/LJH-snow/dsh-tool-sql/actions/workflows/ci.yml)
+
 为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（`dsh`）提供**只读 SQL 查询**能力的 Cordis 工具插件。Agent 可以通过自然语言查询数据、列出表、查看表结构，支持 PostgreSQL 和 MySQL，默认强制只读、拒绝一切写操作。
 
 基于官方「一切皆插件」架构，通过 `ctx.tools.register(defineTool(...))` 注册模型可见工具，完全遵循官方 [adding-a-tool](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/cookbook/adding-a-tool.md) 契约。
@@ -55,7 +57,7 @@ npm install /path/to/dsh-tool-sql
 
 | 工具 | 说明 |
 |---|---|
-| `sql_query` | 执行只读 SQL 查询，以 JSON 返回行数据（超出 `maxRows` 截断） |
+| `sql_query` | 执行只读 SQL 查询，以 JSON 返回行数据（超出 `maxRows` 截断；可选 `limit` 1-1000） |
 | `sql_list_tables` | 列出表（PostgreSQL：public schema；MySQL：当前数据库） |
 | `sql_describe_table` | 查看表结构（列名/类型/可空/默认值） |
 | `sql_explain` | 查看只读语句的执行计划（自动补 `EXPLAIN` 前缀） |
@@ -72,6 +74,7 @@ npm install /path/to/dsh-tool-sql
 | `sql_list_triggers` | 列出触发器（名称/表/时机/事件/定义） |
 | `sql_list_foreign_keys` | 列出外键（表.列 → 引用表.引用列） |
 | `sql_schema_dump` | 导出整库结构：所有表 DDL + 视图定义 |
+| `sql_list_extensions` | 列出数据库扩展（PostgreSQL）；MySQL 提示不支持 |
 
 ## 开发
 

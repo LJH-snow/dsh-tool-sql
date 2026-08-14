@@ -1,4 +1,4 @@
-import type { Driver, DbConfig, ColumnInfo, IndexInfo, DatabaseInfo, TableStat, ColumnMatch, ViewInfo, TableSize, SchemaInfo, FunctionInfo, TriggerInfo, ForeignKeyInfo, SchemaDump } from '../client.js'
+import type { Driver, DbConfig, ColumnInfo, IndexInfo, DatabaseInfo, TableStat, ColumnMatch, ViewInfo, TableSize, SchemaInfo, FunctionInfo, TriggerInfo, ForeignKeyInfo, SchemaDump, ExtensionInfo } from '../client.js'
 import { assertSafeIdentifier } from '../client.js'
 
 export async function createMysqlDriver(config: DbConfig): Promise<Driver> {
@@ -241,6 +241,9 @@ export async function createMysqlDriver(config: DbConfig): Promise<Driver> {
         .filter((v): v is { name: string; definition: string } => v.definition !== null)
         .map(v => ({ name: v.name, definition: v.definition }))
       return { tables, views } as SchemaDump
+    },
+    async listExtensions() {
+      return [] as ExtensionInfo[]
     },
     async close() {
       await conn.end()

@@ -2,6 +2,8 @@
 
 [English](README.md) | [中文](README.zh.md)
 
+[![CI](https://github.com/LJH-snow/dsh-tool-sql/actions/workflows/ci.yml/badge.svg)](https://github.com/LJH-snow/dsh-tool-sql/actions/workflows/ci.yml)
+
 A Cordis tool plugin that gives [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`) **read-only SQL** capabilities. Agents can query data, list tables, and inspect table schemas on PostgreSQL and MySQL in natural language — with a safety-first model that rejects write statements by default.
 
 Built on the official "everything is a plugin" architecture via `ctx.tools.register(defineTool(...))`, following the official [adding-a-tool](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/cookbook/adding-a-tool.md) contract.
@@ -55,7 +57,7 @@ Full example: [examples/cordis.yml](examples/cordis.yml).
 
 | Tool | Description |
 |---|---|
-| `sql_query` | Run a read-only SQL query, returns rows as JSON (truncated to `maxRows`) |
+| `sql_query` | Run a read-only SQL query, returns rows as JSON (truncated to `maxRows`; optional `limit` 1-1000) |
 | `sql_list_tables` | List tables (PostgreSQL: `public` schema; MySQL: current database) |
 | `sql_describe_table` | Describe a table's columns (name, type, nullable, default) |
 | `sql_explain` | Show the execution plan of a read-only statement (auto-prefixes `EXPLAIN`) |
@@ -72,6 +74,7 @@ Full example: [examples/cordis.yml](examples/cordis.yml).
 | `sql_list_triggers` | List triggers (name, table, timing, event, definition) |
 | `sql_list_foreign_keys` | List foreign keys (table/column → referenced table/column) |
 | `sql_schema_dump` | Export whole-database structure: all table DDLs + view definitions |
+| `sql_list_extensions` | List extensions (PostgreSQL); MySQL reports not supported |
 
 ## Development
 

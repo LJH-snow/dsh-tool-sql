@@ -111,6 +111,11 @@ export interface SchemaDump {
   views: Array<{ name: string; definition: string }>
 }
 
+export interface ExtensionInfo {
+  name: string
+  version: string | null
+}
+
 /** SQL driver adapter; implementations live in drivers/* and are dynamically imported. */
 export interface Driver {
   query(sql: string, signal?: AbortSignal): Promise<{ columns: string[]; rows: Array<Record<string, unknown>> }>
@@ -128,6 +133,7 @@ export interface Driver {
   listTriggers(signal?: AbortSignal): Promise<TriggerInfo[]>
   listForeignKeys(signal?: AbortSignal): Promise<ForeignKeyInfo[]>
   schemaDump(signal?: AbortSignal): Promise<SchemaDump>
+  listExtensions(signal?: AbortSignal): Promise<ExtensionInfo[]>
   close(): Promise<void>
 }
 
@@ -166,12 +172,15 @@ export class DbClient {
   private readonly driver: Driver | null
   private readonly maxRows: number
   private readonly timeoutMs: number
+  /** Database type as configured ('postgres' | 'mysql'). */
+  readonly databaseType: DbConfig['type']
 
   constructor(config: DbConfig, driver?: Driver) {
     this.config = config
     this.driver = driver ?? null
     this.maxRows = config.maxRows ?? 100
     this.timeoutMs = config.timeoutMs ?? 15_000
+    this.databaseType = config.type
   }
 
   private combinedSignal(signal?: AbortSignal): AbortSignal | undefined {
@@ -192,15 +201,16 @@ export class DbClient {
     throw new SqlError(`Unsupported database type: ${this.config.type}`, 'unsupported')
   }
 
-  async query(sql: string, signal?: AbortSignal): Promise<QueryResult> {
+  async query(sql: string, signal?: AbortSignal, maxRowsOverride?: number): Promise<QueryResult> {
     assertReadOnly(sql)
     const driver = await this.getDriver()
+    const maxRows = maxRowsOverride === undefined ? this.maxRows : Math.min(maxRowsOverride, this.maxRows)
     try {
       const result = await driver.query(sql, this.combinedSignal(signal))
-      const truncated = result.rows.length > this.maxRows
+      const truncated = result.rows.length > maxRows
       return {
         columns: result.columns,
-        rows: truncated ? result.rows.slice(0, this.maxRows) : result.rows,
+        rows: truncated ? result.rows.slice(0, maxRows) : result.rows,
         rowCount: result.rows.length,
         truncated,
       }
@@ -359,6 +369,16 @@ export class DbClient {
     const driver = await this.getDriver()
     try {
       return await driver.schemaDump(this.combinedSignal(signal))
+    } catch (error) {
+      if (error instanceof SqlError) throw error
+      throw new SqlError(error instanceof Error ? error.message : String(error), 'query')
+    }
+  }
+
+  async listExtensions(signal?: AbortSignal): Promise<ExtensionInfo[]> {
+    const driver = await this.getDriver()
+    try {
+      return await driver.listExtensions(this.combinedSignal(signal))
     } catch (error) {
       if (error instanceof SqlError) throw error
       throw new SqlError(error instanceof Error ? error.message : String(error), 'query')

@@ -46,6 +46,7 @@ export function createTools(client: DbClient) {
         'Run a read-only SQL query against the configured database (PostgreSQL or MySQL). Only SELECT/EXPLAIN/SHOW/DESCRIBE/WITH statements are allowed; write statements are rejected. Returns up to maxRows (default 100) rows.',
       parameters: {
         sql: { type: 'string', required: true, description: 'Read-only SQL statement, e.g. SELECT * FROM users LIMIT 10' },
+        limit: { type: 'integer', description: 'Maximum rows to return, 1-1000 (default: plugin maxRows)' },
       },
       output: {
         schema: {
@@ -73,7 +74,8 @@ export function createTools(client: DbClient) {
       },
       async execute(args, exec) {
         try {
-          const result = await client.query(args.sql, exec.signal)
+          const limit = args.limit === undefined ? undefined : Math.max(1, Math.min(args.limit, 1000))
+          const result = await client.query(args.sql, exec.signal, limit)
           return {
             columns: result.columns,
             rows: result.rows as unknown as Array<Record<string, JsonValue>>,
@@ -794,6 +796,54 @@ export function createTools(client: DbClient) {
       },
       async execute(_args, exec) {
         return await client.schemaDump(exec.signal)
+      },
+    }),
+
+    defineTool({
+      name: 'sql_list_extensions',
+      description:
+        'List installed database extensions/plugins. PostgreSQL returns extensions with versions; MySQL has no extension concept and returns an empty list with a note.',
+      parameters: {},
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            supported: { type: 'boolean', description: 'Whether the database supports extensions (PostgreSQL: true, MySQL: false)' },
+            extensions: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  name: { type: 'string', description: 'Extension name' },
+                  version: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Extension version' },
+                },
+              },
+              description: 'Installed extensions',
+            },
+          },
+        },
+        render: (_args, value) => {
+          if (!value.supported) return [{ type: 'text', text: 'This database (MySQL) does not support extensions.' }]
+          const extensions = value.extensions ?? []
+          if (extensions.length === 0) return [{ type: 'text', text: '(no extensions installed)' }]
+          const lines = extensions.map(e => `${e.name}${e.version ? ` (${e.version})` : ''}`)
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(): ToolCallView {
+        return { card: 'generic', title: `List extensions`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { supported?: boolean; extensions?: unknown[] }
+        return { card: 'generic', title: v.supported ? `${v.extensions?.length ?? 0} extension(s)` : 'Not supported' }
+      },
+      async execute(_args, exec) {
+        if (client.databaseType === 'mysql') {
+          return { supported: false, extensions: [] }
+        }
+        return { supported: true, extensions: await client.listExtensions(exec.signal) }
       },
     }),
   ]
