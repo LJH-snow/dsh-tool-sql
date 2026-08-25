@@ -1763,6 +1763,273 @@ export function createTools(client: DbClient) {
         return { queries: await client.listActiveQueries(exec.signal) }
       },
     }),
+
+    defineTool({
+      name: 'sql_search_routines',
+      description:
+        'Search functions and stored procedures by name (case-insensitive, supports % and _ wildcards). PostgreSQL returns public-schema routines; MySQL returns routines in the current database.',
+      parameters: {
+        pattern: { type: 'string', required: true, description: 'Routine name pattern, e.g. "calc" or "%audit%"' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            matches: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  name: { type: 'string', description: 'Routine name' },
+                  kind: { type: 'string', enum: ['function', 'procedure'], description: 'Routine kind' },
+                  arguments: { type: 'string', description: 'Argument signature where available' },
+                  language: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Implementation language' },
+                },
+              },
+              description: 'Matching routines',
+            },
+          },
+        },
+        render: (_args, value) => {
+          const matches = value.matches ?? []
+          if (matches.length === 0) return [{ type: 'text', text: 'No matching routines found.' }]
+          const lines = ['name\tkind\targuments\tlanguage']
+          lines.push('---\t---\t---\t---')
+          for (const m of matches) {
+            lines.push(`${m.name}\t${m.kind}\t${m.arguments ?? ''}\t${m.language ?? ''}`)
+          }
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(args): ToolCallView {
+        return { card: 'generic', title: `Search routines: ${args.pattern}`, kind: 'search' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { matches?: unknown[] }
+        return { card: 'generic', title: `${v.matches?.length ?? 0} routine(s)` }
+      },
+      async execute(args, exec) {
+        return { matches: await client.searchRoutines(args.pattern, exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_search_indexes',
+      description:
+        'Search indexes by table name or index name (case-insensitive, supports % and _ wildcards). Returns covered columns and uniqueness.',
+      parameters: {
+        pattern: { type: 'string', required: true, description: 'Table/index name pattern, e.g. "user" or "%_pkey"' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            matches: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  schema: { type: 'string', description: 'Schema/database name' },
+                  table: { type: 'string', description: 'Table name' },
+                  name: { type: 'string', description: 'Index name' },
+                  columns: { type: 'array', items: { type: 'string' }, description: 'Covered columns' },
+                  unique: { type: 'boolean', description: 'Whether the index is unique' },
+                },
+              },
+              description: 'Matching indexes',
+            },
+          },
+        },
+        render: (_args, value) => {
+          const matches = value.matches ?? []
+          if (matches.length === 0) return [{ type: 'text', text: 'No matching indexes found.' }]
+          const lines = ['table\tindex\tcolumns\tunique']
+          lines.push('---\t---\t---\t---')
+          for (const m of matches) {
+            lines.push(`${m.table}.${m.name}\t${(m.columns ?? []).join(', ')}\t${m.unique ? 'YES' : 'NO'}`)
+          }
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(args): ToolCallView {
+        return { card: 'generic', title: `Search indexes: ${args.pattern}`, kind: 'search' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { matches?: unknown[] }
+        return { card: 'generic', title: `${v.matches?.length ?? 0} index(es)` }
+      },
+      async execute(args, exec) {
+        return { matches: await client.searchIndexes(args.pattern, exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_list_index_usage',
+      description:
+        'List PostgreSQL index usage statistics for public-schema indexes: scan count and tuples read/fetched, largest scan count first. MySQL reports unsupported.',
+      parameters: {},
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            supported: { type: 'boolean', description: 'Whether the database exposes index usage statistics (PostgreSQL: true, MySQL: false)' },
+            indexes: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  schema: { type: 'string', description: 'Schema name' },
+                  table: { type: 'string', description: 'Table name' },
+                  index: { type: 'string', description: 'Index name' },
+                  scans: { type: 'integer', description: 'Index scan count' },
+                  tuplesRead: { type: 'integer', description: 'Index tuples read' },
+                  tuplesFetched: { type: 'integer', description: 'Index tuples fetched' },
+                },
+              },
+              description: 'Index usage statistics',
+            },
+          },
+        },
+        render: (_args, value) => {
+          if (!value.supported) return [{ type: 'text', text: 'This database (MySQL) does not expose PostgreSQL index usage statistics.' }]
+          const indexes = value.indexes ?? []
+          if (indexes.length === 0) return [{ type: 'text', text: '(no indexes)' }]
+          const lines = ['table\tindex\tscans\tread\tfetched']
+          lines.push('---\t---\t---\t---\t---')
+          for (const idx of indexes) {
+            lines.push(`${idx.table}\t${idx.index}\t${idx.scans ?? 0}\t${idx.tuplesRead ?? 0}\t${idx.tuplesFetched ?? 0}`)
+          }
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(): ToolCallView {
+        return { card: 'generic', title: `List index usage`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { supported?: boolean; indexes?: unknown[] }
+        return { card: 'generic', title: v.supported ? `${v.indexes?.length ?? 0} index(es)` : 'Not supported' }
+      },
+      async execute(_args, exec) {
+        if (client.databaseType === 'mysql') {
+          return { supported: false, indexes: [] }
+        }
+        return { supported: true, indexes: await client.listIndexUsage(exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_list_locks',
+      description:
+        'List database locks visible to the connection. PostgreSQL reads pg_locks joined to pg_stat_activity; MySQL reads performance_schema.data_locks. Includes query text for diagnostics.',
+      parameters: {},
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            locks: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  pid: { type: 'string', description: 'Process/session id' },
+                  user: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'User/session user' },
+                  database: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Database/schema name' },
+                  state: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Session state' },
+                  object: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Locked object' },
+                  lockType: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Lock type' },
+                  mode: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Lock mode' },
+                  granted: { oneOf: [{ type: 'boolean' }, { type: 'null' }], description: 'Whether the lock is granted or waiting' },
+                  query: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Session query text' },
+                },
+              },
+              description: 'Locks',
+            },
+          },
+        },
+        render: (_args, value) => {
+          const locks = value.locks ?? []
+          if (locks.length === 0) return [{ type: 'text', text: '(no locks)' }]
+          const lines = ['pid\tuser\tdatabase\tobject\ttype\tmode\tgranted']
+          lines.push('---\t---\t---\t---\t---\t---\t---')
+          for (const l of locks) {
+            lines.push(`${l.pid}\t${l.user ?? ''}\t${l.database ?? ''}\t${l.object ?? ''}\t${l.lockType ?? ''}\t${l.mode ?? ''}\t${l.granted === true ? 'YES' : l.granted === false ? 'WAITING' : ''}`)
+          }
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(): ToolCallView {
+        return { card: 'generic', title: `List locks`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { locks?: unknown[] }
+        return { card: 'generic', title: `${v.locks?.length ?? 0} lock(s)` }
+      },
+      async execute(_args, exec) {
+        return { locks: await client.listLocks(exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_get_table_last_access',
+      description:
+        'Show the last sequence/index scan times and scan counts for a PostgreSQL table. MySQL reports unsupported.',
+      parameters: {
+        table: { type: 'string', required: true, description: 'Table name (letters, digits, underscores only)' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            table: { type: 'string', description: 'Table name' },
+            supported: { type: 'boolean', description: 'Whether the database exposes PostgreSQL table access statistics' },
+            lastSeqScan: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Last sequential scan timestamp' },
+            lastIdxScan: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Last index scan timestamp' },
+            seqScans: { oneOf: [{ type: 'integer' }, { type: 'null' }], description: 'Sequential scan count' },
+            indexScans: { oneOf: [{ type: 'integer' }, { type: 'null' }], description: 'Index scan count' },
+          },
+        },
+        render: (_args, value) => {
+          if (!value.supported) return [{ type: 'text', text: 'This database (MySQL) does not expose PostgreSQL table access statistics.' }]
+          const lines = [
+            `table: ${value.table ?? ''}`,
+            `last seq scan: ${value.lastSeqScan ?? '(never)'}`,
+            `last index scan: ${value.lastIdxScan ?? '(never)'}`,
+            `seq scans: ${value.seqScans ?? 0}`,
+            `index scans: ${value.indexScans ?? 0}`,
+          ]
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(args): ToolCallView {
+        return { card: 'generic', title: `Last access: ${args.table}`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { table?: string; supported?: boolean }
+        return { card: 'generic', title: v.supported ? `Access: ${v.table ?? ''}` : 'Not supported' }
+      },
+      async execute(args, exec) {
+        if (client.databaseType === 'mysql') {
+          return {
+            table: args.table,
+            supported: false,
+            lastSeqScan: null,
+            lastIdxScan: null,
+            seqScans: null,
+            indexScans: null,
+          }
+        }
+        return await client.getTableLastAccess(args.table, exec.signal)
+      },
+    }),
   ]
 }
 

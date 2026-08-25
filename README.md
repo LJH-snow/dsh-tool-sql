@@ -94,6 +94,11 @@ Full example: [examples/cordis.yml](examples/cordis.yml).
 | `sql_list_enum_types` | List PostgreSQL enum types and values; MySQL reports not supported |
 | `sql_get_table_health` | PostgreSQL table activity/maintenance health; MySQL reports not supported |
 | `sql_list_active_queries` | List non-idle queries visible to the connection (query text included) |
+| `sql_search_routines` | Search function/procedure names (supports `%`/`_`, up to 100) |
+| `sql_search_indexes` | Search indexes by table/index name, with columns and uniqueness |
+| `sql_list_index_usage` | PostgreSQL index usage statistics; MySQL reports not supported |
+| `sql_list_locks` | List locks visible to the connection (PostgreSQL pg_locks, MySQL performance_schema) |
+| `sql_get_table_last_access` | PostgreSQL last seq/index scan times and counts; MySQL reports not supported |
 
 ## Development
 

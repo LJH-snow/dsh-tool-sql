@@ -1,4 +1,4 @@
-import type { Driver, DbConfig, ColumnInfo, IndexInfo, DatabaseInfo, TableStat, ColumnMatch, ViewInfo, TableSize, SchemaInfo, FunctionInfo, TriggerInfo, ForeignKeyInfo, SchemaDump, ExtensionInfo, SequenceInfo, ConstraintInfo, DatabaseItem, RoleInfo, GrantInfo, MaterializedViewInfo, PartitionInfo, TableRowCount, TableMatch, DatabaseSize, TableSizeItem, TableCommentInfo, ColumnStats, FunctionSourceInfo, EnumTypeInfo, TableHealth, ActiveQueryInfo } from '../client.js'
+import type { Driver, DbConfig, ColumnInfo, IndexInfo, DatabaseInfo, TableStat, ColumnMatch, ViewInfo, TableSize, SchemaInfo, FunctionInfo, TriggerInfo, ForeignKeyInfo, SchemaDump, ExtensionInfo, SequenceInfo, ConstraintInfo, DatabaseItem, RoleInfo, GrantInfo, MaterializedViewInfo, PartitionInfo, TableRowCount, TableMatch, DatabaseSize, TableSizeItem, TableCommentInfo, ColumnStats, FunctionSourceInfo, EnumTypeInfo, TableHealth, ActiveQueryInfo, RoutineMatchInfo, IndexMatchInfo, IndexUsageInfo, LockInfo, TableAccessInfo } from '../client.js'
 import { SqlError, assertSafeIdentifier } from '../client.js'
 
 export async function createPostgresDriver(config: DbConfig): Promise<Driver> {
@@ -704,6 +704,174 @@ export async function createPostgresDriver(config: DbConfig): Promise<Driver> {
         durationSeconds: r.duration_seconds === null || r.duration_seconds === undefined ? null : Number(r.duration_seconds),
         query: r.query ?? '',
       }))
+    },
+    async searchRoutines(pattern) {
+      const result = await client.query<{
+        name: string
+        kind: string
+        arguments: string
+        language: string
+      }>(
+        `SELECT p.proname AS name,
+                CASE WHEN p.prokind = 'p' THEN 'procedure' ELSE 'function' END AS kind,
+                pg_get_function_identity_arguments(p.oid) AS arguments,
+                l.lanname AS language
+         FROM pg_proc p
+         JOIN pg_namespace n ON n.oid = p.pronamespace
+         JOIN pg_language l ON l.oid = p.prolang
+         WHERE n.nspname = 'public' AND p.prokind IN ('f', 'p') AND p.proname ILIKE $1
+         ORDER BY p.proname, pg_get_function_identity_arguments(p.oid)
+         LIMIT 100`,
+        [pattern],
+      )
+      return result.rows.map<RoutineMatchInfo>(r => ({
+        name: r.name,
+        kind: r.kind as RoutineMatchInfo['kind'],
+        arguments: r.arguments,
+        language: r.language,
+      }))
+    },
+    async searchIndexes(pattern) {
+      const result = await client.query<{
+        schema_name: string
+        table_name: string
+        index_name: string
+        column_name: string | null
+        is_unique: boolean
+        ord: number
+      }>(
+        `SELECT n.nspname AS schema_name, t.relname AS table_name, i.relname AS index_name,
+                a.attname AS column_name, ix.indisunique AS is_unique, k.ord
+         FROM pg_index ix
+         JOIN pg_class t ON t.oid = ix.indrelid
+         JOIN pg_class i ON i.oid = ix.indexrelid
+         JOIN pg_namespace n ON n.oid = t.relnamespace
+         JOIN LATERAL unnest(ix.indkey::smallint[]) WITH ORDINALITY AS k(attnum, ord) ON TRUE
+         JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = k.attnum
+         WHERE n.nspname = 'public' AND (t.relname ILIKE $1 OR i.relname ILIKE $1)
+         ORDER BY t.relname, i.relname, k.ord
+         LIMIT 100`,
+        [pattern],
+      )
+      const indexes = new Map<string, IndexMatchInfo>()
+      for (const row of result.rows) {
+        const key = `${row.table_name}.${row.index_name}`
+        let info = indexes.get(key)
+        if (!info) {
+          info = {
+            schema: row.schema_name,
+            table: row.table_name,
+            name: row.index_name,
+            columns: [],
+            unique: row.is_unique,
+          }
+          indexes.set(key, info)
+        }
+        if (row.column_name) info.columns.push(row.column_name)
+      }
+      return [...indexes.values()]
+    },
+    async listIndexUsage() {
+      const result = await client.query<{
+        schema_name: string
+        table_name: string
+        index_name: string
+        scans: string
+        tuples_read: string
+        tuples_fetched: string
+      }>(
+        `SELECT n.nspname AS schema_name, t.relname AS table_name, i.relname AS index_name,
+                COALESCE(s.idx_scan, 0) AS scans,
+                COALESCE(s.idx_tup_read, 0) AS tuples_read,
+                COALESCE(s.idx_tup_fetch, 0) AS tuples_fetched
+         FROM pg_class i
+         JOIN pg_index ix ON ix.indexrelid = i.oid
+         JOIN pg_class t ON t.oid = ix.indrelid
+         JOIN pg_namespace n ON n.oid = t.relnamespace
+         LEFT JOIN pg_stat_user_indexes s ON s.indexrelid = i.oid
+         WHERE n.nspname = 'public' AND i.relkind = 'i'
+         ORDER BY COALESCE(s.idx_scan, 0) DESC, t.relname, i.relname
+         LIMIT 200`,
+      )
+      return result.rows.map<IndexUsageInfo>(r => ({
+        schema: r.schema_name,
+        table: r.table_name,
+        index: r.index_name,
+        scans: Number(r.scans ?? 0),
+        tuplesRead: Number(r.tuples_read ?? 0),
+        tuplesFetched: Number(r.tuples_fetched ?? 0),
+      }))
+    },
+    async listLocks() {
+      const result = await client.query<{
+        pid: string
+        user: string | null
+        database: string | null
+        state: string | null
+        object: string | null
+        lock_type: string
+        mode: string
+        granted: boolean
+        query: string | null
+      }>(
+        `SELECT a.pid::text AS pid, a.usename AS user, a.datname AS database, a.state,
+                COALESCE(c.relname, d.datname, l.object::text) AS object,
+                l.locktype AS lock_type, l.mode AS lock_mode, l.granted,
+                a.query
+         FROM pg_locks l
+         LEFT JOIN pg_class c ON c.oid = l.relation
+         LEFT JOIN pg_database d ON d.oid = l.database
+         LEFT JOIN pg_stat_activity a ON a.pid = l.pid
+         WHERE a.pid IS NOT NULL
+         ORDER BY l.pid, l.locktype, l.mode
+         LIMIT 200`,
+      )
+      return result.rows.map<LockInfo>(r => ({
+        pid: r.pid,
+        user: r.user,
+        database: r.database,
+        state: r.state,
+        object: r.object,
+        lockType: r.lock_type,
+        mode: r.mode,
+        granted: r.granted,
+        query: r.query,
+      }))
+    },
+    async getTableLastAccess(table) {
+      const exists = await client.query<{ name: string }>(
+        `SELECT c.relname AS name
+         FROM pg_class c
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE n.nspname = 'public' AND c.relname = $1 AND c.relkind = 'r'`,
+        [table],
+      )
+      if (exists.rows.length === 0) {
+        throw new SqlError(`Table "${table}" not found in public schema.`, 'query')
+      }
+      const stats = await client.query<{
+        last_seq_scan: string | null
+        last_idx_scan: string | null
+        seq_scan: number | null
+        idx_scan: number | null
+      }>(
+        `SELECT s.last_seq_scan::text AS last_seq_scan, s.last_idx_scan::text AS last_idx_scan,
+                s.seq_scan AS seq_scan, s.idx_scan AS idx_scan
+         FROM pg_stat_user_tables s
+         JOIN pg_class c ON c.oid = s.relid
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE n.nspname = 'public' AND c.relname = $1`,
+        [table],
+      )
+      const row = stats.rows[0] ?? {}
+      return {
+        table,
+        supported: true,
+        lastSeqScan: row.last_seq_scan ?? null,
+        lastIdxScan: row.last_idx_scan ?? null,
+        seqScans: row.seq_scan === null || row.seq_scan === undefined ? null : Number(row.seq_scan),
+        indexScans: row.idx_scan === null || row.idx_scan === undefined ? null : Number(row.idx_scan),
+      } as TableAccessInfo
     },
     async close() {
       await client.end()

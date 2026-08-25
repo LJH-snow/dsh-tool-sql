@@ -94,6 +94,11 @@ npm install /path/to/dsh-tool-sql
 | `sql_list_enum_types` | 列出 PostgreSQL enum 类型及值；MySQL 提示不支持 |
 | `sql_get_table_health` | 查看 PostgreSQL 表活动/维护健康；MySQL 提示不支持 |
 | `sql_list_active_queries` | 列出连接可见的非空闲查询（包含查询文本） |
+| `sql_search_routines` | 按函数/存储过程名称搜索（支持 `%`/`_`，最多 100 条） |
+| `sql_search_indexes` | 按表名或索引名搜索索引，返回覆盖列与唯一性 |
+| `sql_list_index_usage` | 列出 PostgreSQL 索引使用统计；MySQL 提示不支持 |
+| `sql_list_locks` | 列出连接可见的锁（PostgreSQL pg_locks；MySQL performance_schema） |
+| `sql_get_table_last_access` | 查看 PostgreSQL 表最近 seq/index scan 时间与次数；MySQL 提示不支持 |
 
 ## 开发
 

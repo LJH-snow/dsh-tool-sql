@@ -132,6 +132,34 @@ function mockDriver(overrides: Partial<Driver> = {}): Driver {
       durationSeconds: 1,
       query: 'SELECT 1',
     }]),
+    searchRoutines: vi.fn(async () => [
+      { name: 'get_orders', kind: 'function', arguments: 'customer_id integer', language: 'sql' },
+    ]),
+    searchIndexes: vi.fn(async () => [
+      { schema: 'public', table: 'orders', name: 'orders_user_id_idx', columns: ['user_id'], unique: false },
+    ]),
+    listIndexUsage: vi.fn(async () => [
+      { schema: 'public', table: 'orders', index: 'orders_user_id_idx', scans: 12, tuplesRead: 500, tuplesFetched: 480 },
+    ]),
+    listLocks: vi.fn(async () => [{
+      pid: '7',
+      user: 'app',
+      database: 'db',
+      state: 'active',
+      object: 'orders',
+      lockType: 'relation',
+      mode: 'AccessShareLock',
+      granted: true,
+      query: 'SELECT * FROM orders',
+    }]),
+    getTableLastAccess: vi.fn(async () => ({
+      table: 'users',
+      supported: true,
+      lastSeqScan: '2026-08-25 12:00:00',
+      lastIdxScan: '2026-08-25 12:05:00',
+      seqScans: 3,
+      indexScans: 40,
+    })),
     close: vi.fn(async () => {}),
     ...overrides,
   }
@@ -458,5 +486,52 @@ describe('DbClient v0.2 methods', () => {
     const driver = mockDriver({ listActiveQueries: vi.fn(async () => { throw new Error('stats unavailable') }) })
     const client = makeClient(driver)
     await expect(client.listActiveQueries()).rejects.toMatchObject({ kind: 'query', message: 'stats unavailable' })
+  })
+
+  it('searchRoutines and searchIndexes normalize bare patterns', async () => {
+    const driver = mockDriver()
+    const client = makeClient(driver)
+    await client.searchRoutines('calc')
+    expect(driver.searchRoutines).toHaveBeenCalledWith('%calc%', expect.anything())
+    await client.searchIndexes('_pkey')
+    expect(driver.searchIndexes).toHaveBeenCalledWith('%_pkey%', expect.anything())
+  })
+
+  it('v0.10 diagnostics methods return routine/index/lock/access info', async () => {
+    const client = makeClient(mockDriver())
+    expect(await client.searchRoutines('get')).toEqual([
+      { name: 'get_orders', kind: 'function', arguments: 'customer_id integer', language: 'sql' },
+    ])
+    expect(await client.searchIndexes('user')).toEqual([
+      { schema: 'public', table: 'orders', name: 'orders_user_id_idx', columns: ['user_id'], unique: false },
+    ])
+    expect(await client.listIndexUsage()).toEqual([
+      { schema: 'public', table: 'orders', index: 'orders_user_id_idx', scans: 12, tuplesRead: 500, tuplesFetched: 480 },
+    ])
+    expect(await client.listLocks()).toEqual([{
+      pid: '7',
+      user: 'app',
+      database: 'db',
+      state: 'active',
+      object: 'orders',
+      lockType: 'relation',
+      mode: 'AccessShareLock',
+      granted: true,
+      query: 'SELECT * FROM orders',
+    }])
+    expect(await client.getTableLastAccess('users')).toMatchObject({ table: 'users', supported: true, seqScans: 3 })
+  })
+
+  it('getTableLastAccess validates the table name before touching the driver', async () => {
+    const driver = mockDriver()
+    const client = makeClient(driver)
+    await expect(client.getTableLastAccess('users; DROP TABLE x')).rejects.toMatchObject({ kind: 'denied' })
+    expect(driver.getTableLastAccess).not.toHaveBeenCalled()
+  })
+
+  it('maps driver errors from v0.10 diagnostics methods to SqlError', async () => {
+    const driver = mockDriver({ listLocks: vi.fn(async () => { throw new Error('lock view unavailable') }) })
+    const client = makeClient(driver)
+    await expect(client.listLocks()).rejects.toMatchObject({ kind: 'query', message: 'lock view unavailable' })
   })
 })

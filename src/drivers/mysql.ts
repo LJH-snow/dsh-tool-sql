@@ -1,4 +1,4 @@
-import type { Driver, DbConfig, ColumnInfo, IndexInfo, DatabaseInfo, TableStat, ColumnMatch, ViewInfo, TableSize, SchemaInfo, FunctionInfo, TriggerInfo, ForeignKeyInfo, SchemaDump, ExtensionInfo, SequenceInfo, ConstraintInfo, DatabaseItem, RoleInfo, GrantInfo, MaterializedViewInfo, PartitionInfo, TableRowCount, TableMatch, DatabaseSize, TableSizeItem, TableCommentInfo, ColumnStats, FunctionSourceInfo, EnumTypeInfo, TableHealth, ActiveQueryInfo } from '../client.js'
+import type { Driver, DbConfig, ColumnInfo, IndexInfo, DatabaseInfo, TableStat, ColumnMatch, ViewInfo, TableSize, SchemaInfo, FunctionInfo, TriggerInfo, ForeignKeyInfo, SchemaDump, ExtensionInfo, SequenceInfo, ConstraintInfo, DatabaseItem, RoleInfo, GrantInfo, MaterializedViewInfo, PartitionInfo, TableRowCount, TableMatch, DatabaseSize, TableSizeItem, TableCommentInfo, ColumnStats, FunctionSourceInfo, EnumTypeInfo, TableHealth, ActiveQueryInfo, RoutineMatchInfo, IndexMatchInfo, IndexUsageInfo, LockInfo, TableAccessInfo } from '../client.js'
 import { assertSafeIdentifier } from '../client.js'
 
 export async function createMysqlDriver(config: DbConfig): Promise<Driver> {
@@ -595,6 +595,112 @@ export async function createMysqlDriver(config: DbConfig): Promise<Driver> {
         durationSeconds: r.duration_seconds === null || r.duration_seconds === undefined ? null : Number(r.duration_seconds),
         query: r.query,
       }))
+    },
+    async searchRoutines(pattern) {
+      const [rows] = await conn.query(
+        `SELECT ROUTINE_NAME AS name, ROUTINE_TYPE AS kind, EXTERNAL_LANGUAGE AS language
+         FROM information_schema.routines
+         WHERE ROUTINE_SCHEMA = DATABASE() AND ROUTINE_NAME LIKE ?
+         ORDER BY ROUTINE_NAME, ROUTINE_TYPE
+         LIMIT 100`,
+        [pattern],
+      )
+      const list = rows as Array<{
+        name: string
+        kind: 'FUNCTION' | 'PROCEDURE'
+        language: string | null
+      }>
+      return list.map<RoutineMatchInfo>(r => ({
+        name: r.name,
+        kind: r.kind.toLowerCase() as RoutineMatchInfo['kind'],
+        arguments: '',
+        language: r.language ?? null,
+      }))
+    },
+    async searchIndexes(pattern) {
+      const [rows] = await conn.query(
+        `SELECT TABLE_SCHEMA AS schema_name, TABLE_NAME AS table_name,
+                INDEX_NAME AS index_name, COLUMN_NAME AS column_name,
+                NON_UNIQUE AS non_unique
+         FROM information_schema.statistics
+         WHERE TABLE_SCHEMA = DATABASE() AND (TABLE_NAME LIKE ? OR INDEX_NAME LIKE ?)
+         ORDER BY TABLE_NAME, INDEX_NAME, SEQ_IN_INDEX
+         LIMIT 100`,
+        [pattern, pattern],
+      )
+      const list = rows as Array<{
+        schema_name: string
+        table_name: string
+        index_name: string
+        column_name: string | null
+        non_unique: number
+      }>
+      const indexes = new Map<string, IndexMatchInfo>()
+      for (const row of list) {
+        const key = `${row.schema_name}.${row.table_name}.${row.index_name}`
+        let info = indexes.get(key)
+        if (!info) {
+          info = {
+            schema: row.schema_name,
+            table: row.table_name,
+            name: row.index_name,
+            columns: [],
+            unique: row.non_unique === 0,
+          }
+          indexes.set(key, info)
+        }
+        if (row.column_name) info.columns.push(row.column_name)
+      }
+      return [...indexes.values()]
+    },
+    async listIndexUsage() {
+      return [] as IndexUsageInfo[]
+    },
+    async listLocks() {
+      const [rows] = await conn.query(
+        `SELECT t.PROCESSLIST_ID AS pid, t.PROCESSLIST_USER AS user,
+                t.PROCESSLIST_DB AS database, t.PROCESSLIST_STATE AS state,
+                d.OBJECT_SCHEMA AS object_schema, d.OBJECT_NAME AS object_name,
+                d.LOCK_TYPE AS lock_type, d.LOCK_MODE AS lock_mode,
+                d.LOCK_STATUS AS lock_status, t.PROCESSLIST_INFO AS query
+         FROM performance_schema.data_locks d
+         LEFT JOIN performance_schema.threads t ON t.THREAD_ID = d.THREAD_ID
+         ORDER BY d.ENGINE_TRANSACTION_ID, d.LOCK_STATUS
+         LIMIT 200`,
+      )
+      const list = rows as Array<{
+        pid: number | string | null
+        user: string | null
+        database: string | null
+        state: string | null
+        object_schema: string | null
+        object_name: string | null
+        lock_type: string
+        lock_mode: string
+        lock_status: 'GRANTED' | 'WAITING' | string
+        query: string | null
+      }>
+      return list.map<LockInfo>(r => ({
+        pid: r.pid === null || r.pid === undefined ? '' : String(r.pid),
+        user: r.user,
+        database: r.database,
+        state: r.state,
+        object: r.object_schema && r.object_name ? `${r.object_schema}.${r.object_name}` : null,
+        lockType: r.lock_type,
+        mode: r.lock_mode,
+        granted: r.lock_status === 'GRANTED',
+        query: r.query,
+      }))
+    },
+    async getTableLastAccess(table) {
+      return {
+        table,
+        supported: false,
+        lastSeqScan: null,
+        lastIdxScan: null,
+        seqScans: null,
+        indexScans: null,
+      } as TableAccessInfo
     },
     async close() {
       await conn.end()

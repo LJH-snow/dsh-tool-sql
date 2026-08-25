@@ -242,6 +242,51 @@ export interface ActiveQueryInfo {
   query: string
 }
 
+export interface RoutineMatchInfo {
+  name: string
+  kind: 'function' | 'procedure'
+  arguments: string
+  language: string | null
+}
+
+export interface IndexMatchInfo {
+  schema: string
+  table: string
+  name: string
+  columns: string[]
+  unique: boolean
+}
+
+export interface IndexUsageInfo {
+  schema: string
+  table: string
+  index: string
+  scans: number
+  tuplesRead: number
+  tuplesFetched: number
+}
+
+export interface LockInfo {
+  pid: string
+  user: string | null
+  database: string | null
+  state: string | null
+  object: string | null
+  lockType: string | null
+  mode: string | null
+  granted: boolean | null
+  query: string | null
+}
+
+export interface TableAccessInfo {
+  table: string
+  supported: boolean
+  lastSeqScan: string | null
+  lastIdxScan: string | null
+  seqScans: number | null
+  indexScans: number | null
+}
+
 /** SQL driver adapter; implementations live in drivers/* and are dynamically imported. */
 export interface Driver {
   query(sql: string, signal?: AbortSignal): Promise<{ columns: string[]; rows: Array<Record<string, unknown>> }>
@@ -279,6 +324,11 @@ export interface Driver {
   listEnumTypes(signal?: AbortSignal): Promise<EnumTypeInfo[]>
   getTableHealth(table: string, signal?: AbortSignal): Promise<TableHealth>
   listActiveQueries(signal?: AbortSignal): Promise<ActiveQueryInfo[]>
+  searchRoutines(pattern: string, signal?: AbortSignal): Promise<RoutineMatchInfo[]>
+  searchIndexes(pattern: string, signal?: AbortSignal): Promise<IndexMatchInfo[]>
+  listIndexUsage(signal?: AbortSignal): Promise<IndexUsageInfo[]>
+  listLocks(signal?: AbortSignal): Promise<LockInfo[]>
+  getTableLastAccess(table: string, signal?: AbortSignal): Promise<TableAccessInfo>
   close(): Promise<void>
 }
 
@@ -719,6 +769,59 @@ export class DbClient {
     const driver = await this.getDriver()
     try {
       return await driver.listActiveQueries(this.combinedSignal(signal))
+    } catch (error) {
+      if (error instanceof SqlError) throw error
+      throw new SqlError(error instanceof Error ? error.message : String(error), 'query')
+    }
+  }
+
+  async searchRoutines(pattern: string, signal?: AbortSignal): Promise<RoutineMatchInfo[]> {
+    const driver = await this.getDriver()
+    try {
+      const normalized = pattern.includes('%') ? pattern : `%${pattern}%`
+      return await driver.searchRoutines(normalized, this.combinedSignal(signal))
+    } catch (error) {
+      if (error instanceof SqlError) throw error
+      throw new SqlError(error instanceof Error ? error.message : String(error), 'query')
+    }
+  }
+
+  async searchIndexes(pattern: string, signal?: AbortSignal): Promise<IndexMatchInfo[]> {
+    const driver = await this.getDriver()
+    try {
+      const normalized = pattern.includes('%') ? pattern : `%${pattern}%`
+      return await driver.searchIndexes(normalized, this.combinedSignal(signal))
+    } catch (error) {
+      if (error instanceof SqlError) throw error
+      throw new SqlError(error instanceof Error ? error.message : String(error), 'query')
+    }
+  }
+
+  async listIndexUsage(signal?: AbortSignal): Promise<IndexUsageInfo[]> {
+    const driver = await this.getDriver()
+    try {
+      return await driver.listIndexUsage(this.combinedSignal(signal))
+    } catch (error) {
+      if (error instanceof SqlError) throw error
+      throw new SqlError(error instanceof Error ? error.message : String(error), 'query')
+    }
+  }
+
+  async listLocks(signal?: AbortSignal): Promise<LockInfo[]> {
+    const driver = await this.getDriver()
+    try {
+      return await driver.listLocks(this.combinedSignal(signal))
+    } catch (error) {
+      if (error instanceof SqlError) throw error
+      throw new SqlError(error instanceof Error ? error.message : String(error), 'query')
+    }
+  }
+
+  async getTableLastAccess(table: string, signal?: AbortSignal): Promise<TableAccessInfo> {
+    assertSafeIdentifier(table, 'table name')
+    const driver = await this.getDriver()
+    try {
+      return await driver.getTableLastAccess(table, this.combinedSignal(signal))
     } catch (error) {
       if (error instanceof SqlError) throw error
       throw new SqlError(error instanceof Error ? error.message : String(error), 'query')

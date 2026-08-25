@@ -12,7 +12,7 @@
 | 架构 | 一切皆插件：`ctx.tools.register(defineTool(...))` 注册模型可见工具 |
 | 官方参考 | 与 `dsh-tool-github` 同模式（已验证的 defineTool 契约） |
 | 项目位置 | `deepseek-harness-pro/dsh-tool-sql/`（与 dsh-tool-github 平级） |
-| 状态 | v0.9 完成：37 工具 + 130 测试全绿，开发文档与代码同步 |
+| 状态 | v0.10 完成：42 工具 + 146 测试全绿，开发文档与代码同步 |
 
 ### 1.1 目标
 - 让 dsh Agent 能对 PostgreSQL / MySQL 执行**只读**查询：查数据、列表、看表结构。
@@ -111,6 +111,17 @@
 
 **不在范围（v0.9）**：写操作、终止查询、执行 DDL、跨库查询。
 
+### 1.11 范围（v0.10，阶段 13）
+| 工具 | 功能 | 需凭据 |
+|---|---|---|
+| `sql_search_routines` | 按函数/存储过程名称搜索（PG：public schema；MySQL：当前库 routines） | 是 |
+| `sql_search_indexes` | 按表名或索引名搜索索引并返回覆盖列/唯一性（PG/MySQL 双驱动） | 是 |
+| `sql_list_index_usage` | 列出 PostgreSQL 索引使用统计（scan/read/fetched）；MySQL 提示不支持 | 是 |
+| `sql_list_locks` | 列出连接可见的锁（PG：pg_locks + pg_stat_activity；MySQL：performance_schema.data_locks） | 是 |
+| `sql_get_table_last_access` | 查看 PostgreSQL 表最近 seq/index scan 时间与次数；MySQL 提示不支持 | 是 |
+
+**不在范围（v0.10）**：写操作、终止锁/查询、执行 DDL、跨库查询。
+
 ## 2. 技术背景（契约要点，同 dsh-tool-github 已验证）
 
 - `defineTool` 契约：参数自动校验、输出规范 JSON 值、`exec.signal` 透传、`presentCall`/`presentResult` 纯函数。
@@ -187,6 +198,11 @@
 ### 阶段 12：v0.9 扩展（数据质量、例程源码与数据库活动）
 - [x] Driver 新增 `getColumnStats`/`getFunctionSource`/`listEnumTypes`/`getTableHealth`/`listActiveQueries` + PG/MySQL 实现
 - [x] 注册 5 个新工具：`sql_get_column_stats`/`sql_get_function_source`/`sql_list_enum_types`/`sql_get_table_health`/`sql_list_active_queries` + UI 呈现
+- [x] 验收：mock 单测；typecheck；build；README 双语更新 + 推送
+
+### 阶段 13：v0.10 扩展（例程/索引检索、锁与访问统计）
+- [x] Driver 新增 `searchRoutines`/`searchIndexes`/`listIndexUsage`/`listLocks`/`getTableLastAccess` + PG/MySQL 实现
+- [x] 注册 5 个新工具：`sql_search_routines`/`sql_search_indexes`/`sql_list_index_usage`/`sql_list_locks`/`sql_get_table_last_access` + UI 呈现
 - [x] 验收：mock 单测；typecheck；build；README 双语更新 + 推送
 
 ## 4. 开发日志
@@ -304,6 +320,17 @@
 - 注册 5 个新工具：`sql_get_column_stats`/`sql_get_function_source`/`sql_list_enum_types`/`sql_get_table_health`/`sql_list_active_queries`（共 37 工具）。
 - 测试增至 130/130（client 42 + tools 88）；typecheck / build 全绿。
 
+### 2026-08-25（阶段 13 规划）
+- 规划 v0.10：例程/索引检索、索引使用统计、锁等待与表访问时间诊断，全部保持只读安全模型。
+- `sql_list_locks`/`sql_list_active_queries` 都可能返回会话 SQL 文本，文档明确诊断用途，不提供终止能力。
+
+### 2026-08-25（阶段 13 实现）
+- Driver 接口新增 `searchRoutines`/`searchIndexes`/`listIndexUsage`/`listLocks`/`getTableLastAccess`，PG/MySQL 双驱动实现。
+  - PG 例程检索：`pg_proc` + `pg_get_function_identity_arguments`；索引检索：`pg_index` 聚合覆盖列；索引使用：`pg_stat_user_indexes` 左关联；锁：`pg_locks` + `pg_stat_activity`；表访问：`pg_stat_user_tables`。
+  - MySQL 例程检索：`information_schema.routines`；索引检索：`information_schema.statistics`；锁：`performance_schema.data_locks` + `threads`；索引使用/表访问不支持。
+- 注册 5 个新工具：`sql_search_routines`/`sql_search_indexes`/`sql_list_index_usage`/`sql_list_locks`/`sql_get_table_last_access`（共 42 工具）。
+- 测试增至 146/146（client 46 + tools 100）；typecheck / build 全绿。
+
 ## 5. 风险与决策记录
 
 | 时间 | 决策/风险 | 说明 |
@@ -327,4 +354,6 @@
 | 2026-08-25 | 精确行数可能扫描大表 | `sql_get_table_row_count` 保持精确语义，工具描述明确提示耗时风险 |
 | 2026-08-25 | 列统计可能扫描大表 | DISTINCT 聚合可能较慢，工具描述明确提示；保持精确结果，不做抽样近似 |
 | 2026-08-25 | 活动查询包含 SQL 文本 | 面向诊断场景保留完整文本，但不在 UI render 中铺满长查询（截断到 200 字符预览） |
+| 2026-08-25 | MySQL 锁诊断依赖 performance_schema | `sql_list_locks` 使用 `performance_schema.data_locks`；旧版本或无权限会按查询错误返回，不编造数据 |
+| 2026-08-25 | 索引使用/表访问统计仅 PostgreSQL | 两个工具在 MySQL 返回 `supported: false`，避免把 information_schema 近似值当作真实统计 |
 | 2026-08-14 | 风险：npm 发布受 2FA 限制 | 同 dsh-tool-github，先 GitHub 安装方式 |

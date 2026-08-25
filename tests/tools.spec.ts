@@ -100,6 +100,34 @@ function mockDriver(overrides: Partial<Driver> = {}): Driver {
       durationSeconds: 1,
       query: 'SELECT 1',
     }]),
+    searchRoutines: vi.fn(async () => [
+      { name: 'get_orders', kind: 'function', arguments: 'customer_id integer', language: 'sql' },
+    ]),
+    searchIndexes: vi.fn(async () => [
+      { schema: 'public', table: 'orders', name: 'orders_user_id_idx', columns: ['user_id'], unique: false },
+    ]),
+    listIndexUsage: vi.fn(async () => [
+      { schema: 'public', table: 'orders', index: 'orders_user_id_idx', scans: 12, tuplesRead: 500, tuplesFetched: 480 },
+    ]),
+    listLocks: vi.fn(async () => [{
+      pid: '7',
+      user: 'app',
+      database: 'db',
+      state: 'active',
+      object: 'orders',
+      lockType: 'relation',
+      mode: 'AccessShareLock',
+      granted: true,
+      query: 'SELECT * FROM orders',
+    }]),
+    getTableLastAccess: vi.fn(async () => ({
+      table: 'users',
+      supported: true,
+      lastSeqScan: '2026-08-25 12:00:00',
+      lastIdxScan: '2026-08-25 12:05:00',
+      seqScans: 3,
+      indexScans: 40,
+    })),
     close: vi.fn(async () => {}),
     ...overrides,
   }
@@ -119,6 +147,7 @@ describe('tool definitions', () => {
       'sql_get_schema',
       'sql_get_table_comments',
       'sql_get_table_health',
+      'sql_get_table_last_access',
       'sql_get_table_row_count',
       'sql_list_active_queries',
       'sql_list_constraints',
@@ -129,7 +158,9 @@ describe('tool definitions', () => {
       'sql_list_functions',
       'sql_list_grants',
       'sql_list_incoming_foreign_keys',
+      'sql_list_index_usage',
       'sql_list_indexes',
+      'sql_list_locks',
       'sql_list_materialized_views',
       'sql_list_partitions',
       'sql_list_roles',
@@ -144,6 +175,8 @@ describe('tool definitions', () => {
       'sql_query',
       'sql_schema_dump',
       'sql_search_columns',
+      'sql_search_indexes',
+      'sql_search_routines',
       'sql_search_tables',
       'sql_table_size',
       'sql_table_stats',
@@ -235,6 +268,12 @@ describe('tool definitions', () => {
     await expect(functionSource.execute({} as never, exec())).rejects.toThrow()
     const tableHealth = tools()['sql_get_table_health']
     await expect(tableHealth.execute({} as never, exec())).rejects.toThrow()
+    const routines = tools()['sql_search_routines']
+    await expect(routines.execute({} as never, exec())).rejects.toThrow()
+    const indexSearch = tools()['sql_search_indexes']
+    await expect(indexSearch.execute({} as never, exec())).rejects.toThrow()
+    const lastAccess = tools()['sql_get_table_last_access']
+    await expect(lastAccess.execute({} as never, exec())).rejects.toThrow()
   })
 
   it('sql_explain prefixes EXPLAIN when missing and passes read-only check', async () => {
@@ -730,6 +769,95 @@ describe('tool definitions', () => {
     })
     expect(JSON.stringify(blocks)).toContain('SELECT 1')
   })
+
+  it('sql_search_routines returns and renders matches', async () => {
+    const tool = tools()['sql_search_routines']
+    const result = await tool.execute({ pattern: 'get' }, exec())
+    expect(result).toEqual({
+      matches: [{ name: 'get_orders', kind: 'function', arguments: 'customer_id integer', language: 'sql' }],
+    })
+    const blocks = (tool.output as { render: (a: unknown, v: any) => unknown }).render({ pattern: 'get' }, {
+      matches: [{ name: 'get_orders', kind: 'function', arguments: 'customer_id integer', language: 'sql' }],
+    })
+    expect(JSON.stringify(blocks)).toContain('get_orders')
+  })
+
+  it('sql_search_indexes returns and renders matches', async () => {
+    const tool = tools()['sql_search_indexes']
+    const result = await tool.execute({ pattern: 'user' }, exec())
+    expect(result).toEqual({
+      matches: [{ schema: 'public', table: 'orders', name: 'orders_user_id_idx', columns: ['user_id'], unique: false }],
+    })
+    const blocks = (tool.output as { render: (a: unknown, v: any) => unknown }).render({ pattern: 'user' }, {
+      matches: [{ schema: 'public', table: 'orders', name: 'orders_user_id_idx', columns: ['user_id'], unique: false }],
+    })
+    expect(JSON.stringify(blocks)).toContain('orders_user_id_idx')
+  })
+
+  it('sql_list_index_usage returns supported:true on postgres', async () => {
+    const tool = tools()['sql_list_index_usage']
+    const result = await tool.execute({}, exec())
+    expect(result).toEqual({
+      supported: true,
+      indexes: [{ schema: 'public', table: 'orders', index: 'orders_user_id_idx', scans: 12, tuplesRead: 500, tuplesFetched: 480 }],
+    })
+    const blocks = (tool.output as { render: (a: unknown, v: any) => unknown }).render({}, {
+      supported: true,
+      indexes: [{ table: 'orders', index: 'orders_user_id_idx', scans: 12, tuplesRead: 500, tuplesFetched: 480 }],
+    })
+    expect(JSON.stringify(blocks)).toContain('12')
+  })
+
+  it('sql_list_index_usage reports not supported on mysql', async () => {
+    const client = new DbClient({
+      type: 'mysql', host: 'localhost', user: 'u', password: 'p', database: 'db',
+    }, mockDriver())
+    const tool = createTools(client).find(t => t.name === 'sql_list_index_usage')!
+    const result = await tool.execute({}, exec())
+    expect(result).toEqual({ supported: false, indexes: [] })
+  })
+
+  it('sql_list_locks returns and renders locks', async () => {
+    const tool = tools()['sql_list_locks']
+    const result = await tool.execute({}, exec())
+    expect(result).toEqual({
+      locks: [{
+        pid: '7',
+        user: 'app',
+        database: 'db',
+        state: 'active',
+        object: 'orders',
+        lockType: 'relation',
+        mode: 'AccessShareLock',
+        granted: true,
+        query: 'SELECT * FROM orders',
+      }],
+    })
+    const blocks = (tool.output as { render: (a: unknown, v: any) => unknown }).render({}, {
+      locks: [{ pid: '7', user: 'app', database: 'db', object: 'orders', lockType: 'relation', mode: 'AccessShareLock', granted: true }],
+    })
+    expect(JSON.stringify(blocks)).toContain('AccessShareLock')
+    expect(JSON.stringify(blocks)).toContain('YES')
+  })
+
+  it('sql_get_table_last_access returns and renders access info', async () => {
+    const tool = tools()['sql_get_table_last_access']
+    const result = await tool.execute({ table: 'users' }, exec())
+    expect(result).toMatchObject({ table: 'users', supported: true, seqScans: 3, indexScans: 40 })
+    const blocks = (tool.output as { render: (a: unknown, v: any) => unknown }).render({ table: 'users' }, {
+      table: 'users', supported: true, lastSeqScan: '2026-08-25 12:00:00', lastIdxScan: null, seqScans: 3, indexScans: 40,
+    })
+    expect(JSON.stringify(blocks)).toContain('seq scans: 3')
+  })
+
+  it('sql_get_table_last_access reports not supported on mysql', async () => {
+    const client = new DbClient({
+      type: 'mysql', host: 'localhost', user: 'u', password: 'p', database: 'db',
+    }, mockDriver())
+    const tool = createTools(client).find(t => t.name === 'sql_get_table_last_access')!
+    const result = await tool.execute({ table: 'users' }, exec())
+    expect(result).toMatchObject({ supported: false })
+  })
 })
 
 describe('tool presentation (pure render intents)', () => {
@@ -981,5 +1109,38 @@ describe('tool presentation (pure render intents)', () => {
     const t = defs()['sql_list_active_queries'] as any
     expect(t.presentCall({})).toMatchObject({ card: 'generic', kind: 'read', title: 'List active queries' })
     expect(t.presentResult({}, { queries: [{}] })).toMatchObject({ title: '1 active query(s)' })
+  })
+
+  it('sql_search_routines pending and result cards', () => {
+    const t = defs()['sql_search_routines'] as any
+    expect(t.presentCall({ pattern: 'get' })).toMatchObject({ card: 'generic', kind: 'search', title: 'Search routines: get' })
+    expect(t.presentResult({ pattern: 'get' }, { matches: [{}] })).toMatchObject({ title: '1 routine(s)' })
+  })
+
+  it('sql_search_indexes pending and result cards', () => {
+    const t = defs()['sql_search_indexes'] as any
+    expect(t.presentCall({ pattern: 'user' })).toMatchObject({ card: 'generic', kind: 'search', title: 'Search indexes: user' })
+    expect(t.presentResult({ pattern: 'user' }, { matches: [{}] })).toMatchObject({ title: '1 index(es)' })
+  })
+
+  it('sql_list_index_usage pending and result cards', () => {
+    const t = defs()['sql_list_index_usage'] as any
+    expect(t.presentCall({})).toMatchObject({ card: 'generic', kind: 'read', title: 'List index usage' })
+    expect(t.presentResult({}, { supported: true, indexes: [{}] })).toMatchObject({ title: '1 index(es)' })
+    expect(t.presentResult({}, { supported: false, indexes: [] })).toMatchObject({ title: 'Not supported' })
+  })
+
+  it('sql_list_locks pending and result cards', () => {
+    const t = defs()['sql_list_locks'] as any
+    expect(t.presentCall({})).toMatchObject({ card: 'generic', kind: 'read', title: 'List locks' })
+    expect(t.presentResult({}, { locks: [{}] })).toMatchObject({ title: '1 lock(s)' })
+  })
+
+  it('sql_get_table_last_access pending and result cards', () => {
+    const t = defs()['sql_get_table_last_access'] as any
+    const args = { table: 'users' }
+    expect(t.presentCall(args)).toMatchObject({ card: 'generic', kind: 'read', title: 'Last access: users' })
+    expect(t.presentResult(args, { table: 'users', supported: true })).toMatchObject({ title: 'Access: users' })
+    expect(t.presentResult(args, { table: 'users', supported: false })).toMatchObject({ title: 'Not supported' })
   })
 })
