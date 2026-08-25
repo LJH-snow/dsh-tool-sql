@@ -1496,6 +1496,273 @@ export function createTools(client: DbClient) {
         return { table: args.table, foreignKeys: await client.listIncomingForeignKeys(args.table, exec.signal) }
       },
     }),
+
+    defineTool({
+      name: 'sql_get_column_stats',
+      description:
+        'Analyze a single column: total rows, non-null rows, null rows, distinct values, and the distinct ratio among non-null values. Uses COUNT aggregates and can be slow on very large tables.',
+      parameters: {
+        table: { type: 'string', required: true, description: 'Table name (letters, digits, underscores only)' },
+        column: { type: 'string', required: true, description: 'Column name (letters, digits, underscores only)' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            table: { type: 'string', description: 'Table name' },
+            column: { type: 'string', description: 'Column name' },
+            rowCount: { type: 'integer', description: 'Total rows' },
+            nonNullCount: { type: 'integer', description: 'Rows with a non-null value' },
+            nullCount: { type: 'integer', description: 'Rows with a null value' },
+            distinctCount: { type: 'integer', description: 'Distinct non-null values' },
+            distinctRatio: { oneOf: [{ type: 'number' }, { type: 'null' }], description: 'Distinct count divided by non-null count' },
+          },
+        },
+        render: (_args, value) => {
+          const ratio = value.distinctRatio === null || value.distinctRatio === undefined ? 'n/a' : value.distinctRatio.toFixed(4)
+          const lines = [
+            `table: ${value.table ?? ''}`,
+            `column: ${value.column ?? ''}`,
+            `rows: ${value.rowCount ?? 0}`,
+            `non-null: ${value.nonNullCount ?? 0}`,
+            `null: ${value.nullCount ?? 0}`,
+            `distinct: ${value.distinctCount ?? 0}`,
+            `distinct ratio: ${ratio}`,
+          ]
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(args): ToolCallView {
+        return { card: 'generic', title: `Column stats: ${args.table}.${args.column}`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { table?: string; column?: string; rowCount?: number }
+        return { card: 'generic', title: `Stats: ${v.table ?? ''}.${v.column ?? ''}`, content: [{ type: 'text', text: `${v.rowCount ?? 0} row(s)` }] }
+      },
+      async execute(args, exec) {
+        return await client.getColumnStats(args.table, args.column, exec.signal)
+      },
+    }),
+
+    defineTool({
+      name: 'sql_get_function_source',
+      description:
+        'Return the source definition of a function or stored procedure. PostgreSQL returns all matching overloads in the public schema; MySQL returns routines from the current database.',
+      parameters: {
+        name: { type: 'string', required: true, description: 'Function or stored procedure name' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            name: { type: 'string', description: 'Routine name' },
+            sources: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  name: { type: 'string', description: 'Routine name' },
+                  kind: { type: 'string', enum: ['function', 'procedure'], description: 'Routine kind' },
+                  arguments: { type: 'string', description: 'Argument signature where available' },
+                  language: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Implementation language' },
+                  source: { type: 'string', description: 'Routine source definition' },
+                },
+              },
+              description: 'Matching routines',
+            },
+          },
+        },
+        render: (_args, value) => {
+          const sources = value.sources ?? []
+          if (sources.length === 0) return [{ type: 'text', text: `No function or procedure named "${value.name}" found.` }]
+          const blocks = sources.map((s) => [
+            `name: ${s.name}`,
+            `kind: ${s.kind}`,
+            `arguments: ${s.arguments ?? ''}`,
+            `language: ${s.language ?? ''}`,
+            `source:\n${s.source ?? ''}`,
+          ].join('\n'))
+          return [{ type: 'text', text: blocks.join('\n---\n') }]
+        },
+      },
+      presentCall(args): ToolCallView {
+        return { card: 'generic', title: `Function source: ${args.name}`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { name?: string; sources?: unknown[] }
+        return { card: 'generic', title: `Source: ${v.name ?? ''}`, content: [{ type: 'text', text: `${v.sources?.length ?? 0} match(es)` }] }
+      },
+      async execute(args, exec) {
+        return { name: args.name, sources: await client.getFunctionSource(args.name, exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_list_enum_types',
+      description:
+        'List PostgreSQL enum types with their values in declaration order. MySQL reports unsupported because it has no standalone enum type objects.',
+      parameters: {},
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            supported: { type: 'boolean', description: 'Whether the database supports enum type objects (PostgreSQL: true, MySQL: false)' },
+            enumTypes: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  name: { type: 'string', description: 'Enum type name' },
+                  values: { type: 'array', items: { type: 'string' }, description: 'Enum values in declaration order' },
+                },
+              },
+              description: 'Enum types',
+            },
+          },
+        },
+        render: (_args, value) => {
+          if (!value.supported) return [{ type: 'text', text: 'This database (MySQL) does not support enum type objects.' }]
+          const enumTypes = value.enumTypes ?? []
+          if (enumTypes.length === 0) return [{ type: 'text', text: '(no enum types)' }]
+          const lines = ['name\tvalues']
+          lines.push('---\t---')
+          for (const e of enumTypes) {
+            lines.push(`${e.name}\t${(e.values ?? []).join(', ')}`)
+          }
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(): ToolCallView {
+        return { card: 'generic', title: `List enum types`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { supported?: boolean; enumTypes?: unknown[] }
+        return { card: 'generic', title: v.supported ? `${v.enumTypes?.length ?? 0} enum type(s)` : 'Not supported' }
+      },
+      async execute(_args, exec) {
+        if (client.databaseType === 'mysql') {
+          return { supported: false, enumTypes: [] }
+        }
+        return { supported: true, enumTypes: await client.listEnumTypes(exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_get_table_health',
+      description:
+        'Show PostgreSQL table activity and maintenance health: sequence scans, index scans, live/dead rows, and last vacuum/analyze times. MySQL reports unsupported.',
+      parameters: {
+        table: { type: 'string', required: true, description: 'Table name (letters, digits, underscores only)' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            table: { type: 'string', description: 'Table name' },
+            supported: { type: 'boolean', description: 'Whether the database exposes PostgreSQL table health statistics' },
+            seqScans: { oneOf: [{ type: 'integer' }, { type: 'null' }], description: 'Sequence scan count' },
+            indexScans: { oneOf: [{ type: 'integer' }, { type: 'null' }], description: 'Index scan count' },
+            liveRows: { oneOf: [{ type: 'integer' }, { type: 'null' }], description: 'Estimated live rows' },
+            deadRows: { oneOf: [{ type: 'integer' }, { type: 'null' }], description: 'Dead rows' },
+            lastVacuum: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Last vacuum timestamp' },
+            lastAnalyze: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Last analyze timestamp' },
+          },
+        },
+        render: (_args, value) => {
+          if (!value.supported) return [{ type: 'text', text: 'This database (MySQL) does not expose PostgreSQL table health statistics.' }]
+          const lines = [
+            `table: ${value.table ?? ''}`,
+            `seq scans: ${value.seqScans ?? 0}`,
+            `index scans: ${value.indexScans ?? 0}`,
+            `live rows: ${value.liveRows ?? 0}`,
+            `dead rows: ${value.deadRows ?? 0}`,
+            `last vacuum: ${value.lastVacuum ?? '(never)'}`,
+            `last analyze: ${value.lastAnalyze ?? '(never)'}`,
+          ]
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(args): ToolCallView {
+        return { card: 'generic', title: `Table health: ${args.table}`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { table?: string; supported?: boolean; deadRows?: number | null }
+        return { card: 'generic', title: v.supported ? `Health: ${v.table ?? ''}` : 'Not supported' }
+      },
+      async execute(args, exec) {
+        if (client.databaseType === 'mysql') {
+          return {
+            table: args.table,
+            supported: false,
+            seqScans: null,
+            indexScans: null,
+            liveRows: null,
+            deadRows: null,
+            lastVacuum: null,
+            lastAnalyze: null,
+          }
+        }
+        return await client.getTableHealth(args.table, exec.signal)
+      },
+    }),
+
+    defineTool({
+      name: 'sql_list_active_queries',
+      description:
+        'List currently running/non-idle queries visible to the connection. PostgreSQL reads pg_stat_activity; MySQL reads information_schema.PROCESSLIST. Query text is included for diagnostics.',
+      parameters: {},
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            queries: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  id: { type: 'string', description: 'Process/session id' },
+                  user: { type: 'string', description: 'User/session user' },
+                  database: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Database/schema name' },
+                  state: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Current state' },
+                  durationSeconds: { oneOf: [{ type: 'integer' }, { type: 'null' }], description: 'Elapsed seconds' },
+                  query: { type: 'string', description: 'Query text' },
+                },
+              },
+              description: 'Active queries',
+            },
+          },
+        },
+        render: (_args, value) => {
+          const queries = value.queries ?? []
+          if (queries.length === 0) return [{ type: 'text', text: '(no active queries)' }]
+          const lines = ['id\tuser\tdatabase\tstate\tduration_s\tquery']
+          lines.push('---\t---\t---\t---\t---\t---')
+          for (const q of queries) {
+            const preview = (q.query ?? '').replace(/\s+/g, ' ').slice(0, 200)
+            lines.push(`${q.id}\t${q.user}\t${q.database ?? ''}\t${q.state ?? ''}\t${q.durationSeconds ?? ''}\t${preview}`)
+          }
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(): ToolCallView {
+        return { card: 'generic', title: `List active queries`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { queries?: unknown[] }
+        return { card: 'generic', title: `${v.queries?.length ?? 0} active query(s)` }
+      },
+      async execute(_args, exec) {
+        return { queries: await client.listActiveQueries(exec.signal) }
+      },
+    }),
   ]
 }
 

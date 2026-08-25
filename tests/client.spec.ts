@@ -97,6 +97,41 @@ function mockDriver(overrides: Partial<Driver> = {}): Driver {
     listIncomingForeignKeys: vi.fn(async () => [
       { name: 'orders_user_id_fkey', table: 'orders', column: 'user_id', referencedTable: 'users', referencedColumn: 'id' },
     ]),
+    getColumnStats: vi.fn(async () => ({
+      table: 'users',
+      column: 'email',
+      rowCount: 100,
+      nonNullCount: 95,
+      nullCount: 5,
+      distinctCount: 90,
+      distinctRatio: 90 / 95,
+    })),
+    getFunctionSource: vi.fn(async () => [{
+      name: 'add',
+      kind: 'function',
+      arguments: 'a int, b int',
+      language: 'sql',
+      source: 'CREATE FUNCTION public.add(a integer, b integer) RETURNS integer LANGUAGE sql AS ...',
+    }]),
+    listEnumTypes: vi.fn(async () => [{ name: 'order_status', values: ['new', 'paid'] }]),
+    getTableHealth: vi.fn(async () => ({
+      table: 'users',
+      supported: true,
+      seqScans: 10,
+      indexScans: 20,
+      liveRows: 100,
+      deadRows: 3,
+      lastVacuum: '2026-08-25 12:00:00',
+      lastAnalyze: '2026-08-25 12:00:00',
+    })),
+    listActiveQueries: vi.fn(async () => [{
+      id: '7',
+      user: 'app',
+      database: 'db',
+      state: 'active',
+      durationSeconds: 1,
+      query: 'SELECT 1',
+    }]),
     close: vi.fn(async () => {}),
     ...overrides,
   }
@@ -385,5 +420,43 @@ describe('DbClient v0.2 methods', () => {
     const driver = mockDriver({ listTableSizes: vi.fn(async () => { throw new Error('catalog unavailable') }) })
     const client = makeClient(driver)
     await expect(client.listTableSizes()).rejects.toMatchObject({ kind: 'query', message: 'catalog unavailable' })
+  })
+
+  it('getColumnStats validates table and column before touching the driver', async () => {
+    const driver = mockDriver()
+    const client = makeClient(driver)
+    await expect(client.getColumnStats('users; DROP TABLE x', 'id')).rejects.toMatchObject({ kind: 'denied' })
+    await expect(client.getColumnStats('users', 'id; DROP TABLE x')).rejects.toMatchObject({ kind: 'denied' })
+    expect(driver.getColumnStats).not.toHaveBeenCalled()
+  })
+
+  it('v0.9 diagnostics methods return column/function/enum/health/active-query info', async () => {
+    const client = makeClient(mockDriver())
+    expect(await client.getColumnStats('users', 'email')).toEqual({
+      table: 'users',
+      column: 'email',
+      rowCount: 100,
+      nonNullCount: 95,
+      nullCount: 5,
+      distinctCount: 90,
+      distinctRatio: 90 / 95,
+    })
+    expect(await client.getFunctionSource('add')).toHaveLength(1)
+    expect(await client.listEnumTypes()).toEqual([{ name: 'order_status', values: ['new', 'paid'] }])
+    expect(await client.getTableHealth('users')).toMatchObject({ table: 'users', supported: true, liveRows: 100 })
+    expect(await client.listActiveQueries()).toEqual([{
+      id: '7',
+      user: 'app',
+      database: 'db',
+      state: 'active',
+      durationSeconds: 1,
+      query: 'SELECT 1',
+    }])
+  })
+
+  it('maps driver errors from v0.9 diagnostics methods to SqlError', async () => {
+    const driver = mockDriver({ listActiveQueries: vi.fn(async () => { throw new Error('stats unavailable') }) })
+    const client = makeClient(driver)
+    await expect(client.listActiveQueries()).rejects.toMatchObject({ kind: 'query', message: 'stats unavailable' })
   })
 })

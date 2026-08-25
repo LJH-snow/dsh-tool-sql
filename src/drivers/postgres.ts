@@ -1,4 +1,4 @@
-import type { Driver, DbConfig, ColumnInfo, IndexInfo, DatabaseInfo, TableStat, ColumnMatch, ViewInfo, TableSize, SchemaInfo, FunctionInfo, TriggerInfo, ForeignKeyInfo, SchemaDump, ExtensionInfo, SequenceInfo, ConstraintInfo, DatabaseItem, RoleInfo, GrantInfo, MaterializedViewInfo, PartitionInfo, TableRowCount, TableMatch, DatabaseSize, TableSizeItem, TableCommentInfo } from '../client.js'
+import type { Driver, DbConfig, ColumnInfo, IndexInfo, DatabaseInfo, TableStat, ColumnMatch, ViewInfo, TableSize, SchemaInfo, FunctionInfo, TriggerInfo, ForeignKeyInfo, SchemaDump, ExtensionInfo, SequenceInfo, ConstraintInfo, DatabaseItem, RoleInfo, GrantInfo, MaterializedViewInfo, PartitionInfo, TableRowCount, TableMatch, DatabaseSize, TableSizeItem, TableCommentInfo, ColumnStats, FunctionSourceInfo, EnumTypeInfo, TableHealth, ActiveQueryInfo } from '../client.js'
 import { SqlError, assertSafeIdentifier } from '../client.js'
 
 export async function createPostgresDriver(config: DbConfig): Promise<Driver> {
@@ -558,6 +558,151 @@ export async function createPostgresDriver(config: DbConfig): Promise<Driver> {
         column: r.column,
         referencedTable: r.referenced_table,
         referencedColumn: r.referenced_column,
+      }))
+    },
+    async getColumnStats(table, column) {
+      assertSafeIdentifier(table, 'table name')
+      assertSafeIdentifier(column, 'column name')
+      const result = await client.query<{
+        row_count: string
+        non_null: string
+        null_count: string
+        distinct_count: string
+      }>(
+        `SELECT COUNT(*)::bigint AS row_count,
+                COUNT("${column}")::bigint AS non_null,
+                (COUNT(*) - COUNT("${column}"))::bigint AS null_count,
+                COALESCE(COUNT(DISTINCT "${column}"), 0)::bigint AS distinct_count
+         FROM "${table}"`,
+      )
+      const row = result.rows[0] ?? { row_count: '0', non_null: '0', null_count: '0', distinct_count: '0' }
+      const nonNullCount = Number(row.non_null ?? 0)
+      const distinctCount = Number(row.distinct_count ?? 0)
+      return {
+        table,
+        column,
+        rowCount: Number(row.row_count ?? 0),
+        nonNullCount,
+        nullCount: Number(row.null_count ?? 0),
+        distinctCount,
+        distinctRatio: nonNullCount > 0 ? distinctCount / nonNullCount : null,
+      } as ColumnStats
+    },
+    async getFunctionSource(name) {
+      const result = await client.query<{
+        name: string
+        kind: string
+        arguments: string
+        language: string
+        source: string
+      }>(
+        `SELECT p.proname AS name,
+                CASE WHEN p.prokind = 'p' THEN 'procedure' ELSE 'function' END AS kind,
+                pg_get_function_identity_arguments(p.oid) AS arguments,
+                l.lanname AS language,
+                pg_get_functiondef(p.oid) AS source
+         FROM pg_proc p
+         JOIN pg_namespace n ON n.oid = p.pronamespace
+         JOIN pg_language l ON l.oid = p.prolang
+         WHERE n.nspname = 'public' AND p.proname = $1 AND p.prokind IN ('f', 'p')
+         ORDER BY p.proname, pg_get_function_identity_arguments(p.oid)`,
+        [name],
+      )
+      if (result.rows.length === 0) {
+        throw new SqlError(`Function "${name}" not found in public schema.`, 'query')
+      }
+      return result.rows.map<FunctionSourceInfo>(r => ({
+        name: r.name,
+        kind: r.kind as FunctionSourceInfo['kind'],
+        arguments: r.arguments,
+        language: r.language,
+        source: r.source,
+      }))
+    },
+    async listEnumTypes() {
+      const result = await client.query<{ name: string; value: string; ord: string }>(
+        `SELECT t.typname AS name, e.enumlabel AS value, e.enumsortorder::text AS ord
+         FROM pg_type t
+         JOIN pg_enum e ON e.enumtypid = t.oid
+         JOIN pg_namespace n ON n.oid = t.typnamespace
+         WHERE n.nspname = 'public'
+         ORDER BY t.typname, e.enumsortorder`,
+      )
+      const types = new Map<string, EnumTypeInfo>()
+      for (const row of result.rows) {
+        let info = types.get(row.name)
+        if (!info) {
+          info = { name: row.name, values: [] }
+          types.set(row.name, info)
+        }
+        info.values.push(row.value)
+      }
+      return [...types.values()]
+    },
+    async getTableHealth(table) {
+      const exists = await client.query<{ name: string }>(
+        `SELECT c.relname AS name
+         FROM pg_class c
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE n.nspname = 'public' AND c.relname = $1 AND c.relkind = 'r'`,
+        [table],
+      )
+      if (exists.rows.length === 0) {
+        throw new SqlError(`Table "${table}" not found in public schema.`, 'query')
+      }
+      const stats = await client.query<{
+        table: string
+        seq_scans: number | null
+        index_scans: number | null
+        live_rows: number | null
+        dead_rows: number | null
+        last_vacuum: string | null
+        last_analyze: string | null
+      }>(
+        `SELECT c.relname AS table, s.seq_scan AS seq_scans, s.idx_scan AS index_scans,
+                s.n_live_tup AS live_rows, s.n_dead_tup AS dead_rows,
+                s.last_vacuum::text AS last_vacuum, s.last_analyze::text AS last_analyze
+         FROM pg_stat_user_tables s
+         JOIN pg_class c ON c.oid = s.relid
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE n.nspname = 'public' AND c.relname = $1`,
+        [table],
+      )
+      const row = stats.rows[0] ?? {}
+      return {
+        table,
+        supported: true,
+        seqScans: row.seq_scans === null || row.seq_scans === undefined ? null : Number(row.seq_scans),
+        indexScans: row.index_scans === null || row.index_scans === undefined ? null : Number(row.index_scans),
+        liveRows: row.live_rows === null || row.live_rows === undefined ? null : Number(row.live_rows),
+        deadRows: row.dead_rows === null || row.dead_rows === undefined ? null : Number(row.dead_rows),
+        lastVacuum: row.last_vacuum ?? null,
+        lastAnalyze: row.last_analyze ?? null,
+      } as TableHealth
+    },
+    async listActiveQueries() {
+      const result = await client.query<{
+        id: string
+        user: string
+        database: string | null
+        state: string | null
+        duration_seconds: string | null
+        query: string | null
+      }>(
+        `SELECT pid::text AS id, usename AS user, datname AS database, state,
+                EXTRACT(EPOCH FROM (now() - query_start))::int AS duration_seconds,
+                query
+         FROM pg_stat_activity
+         WHERE state IS NOT NULL AND state <> 'idle' AND query NOT LIKE '%pg_stat_activity%'
+         ORDER BY query_start`,
+      )
+      return result.rows.map<ActiveQueryInfo>(r => ({
+        id: r.id,
+        user: r.user,
+        database: r.database,
+        state: r.state,
+        durationSeconds: r.duration_seconds === null || r.duration_seconds === undefined ? null : Number(r.duration_seconds),
+        query: r.query ?? '',
       }))
     },
     async close() {

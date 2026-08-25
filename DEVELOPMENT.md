@@ -12,7 +12,7 @@
 | 架构 | 一切皆插件：`ctx.tools.register(defineTool(...))` 注册模型可见工具 |
 | 官方参考 | 与 `dsh-tool-github` 同模式（已验证的 defineTool 契约） |
 | 项目位置 | `deepseek-harness-pro/dsh-tool-sql/`（与 dsh-tool-github 平级） |
-| 状态 | v0.8 完成：31 工具 + 115 测试全绿，开发文档与代码同步 |
+| 状态 | v0.9 完成：37 工具 + 130 测试全绿，开发文档与代码同步 |
 
 ### 1.1 目标
 - 让 dsh Agent 能对 PostgreSQL / MySQL 执行**只读**查询：查数据、列表、看表结构。
@@ -100,6 +100,17 @@
 
 **不在范围（v0.8）**：写操作、执行 DDL、跨库查询、执行计划分析。
 
+### 1.10 范围（v0.9，阶段 12）
+| 工具 | 功能 | 需凭据 |
+|---|---|---|
+| `sql_get_column_stats` | 单列质量分析：总数/非空/空值/去重值/去重比例（PG/MySQL 双驱动） | 是 |
+| `sql_get_function_source` | 返回函数/存储过程源码（PG：全部匹配重载；MySQL：information_schema.routines + SHOW CREATE） | 是 |
+| `sql_list_enum_types` | 列出 PostgreSQL enum 类型及声明顺序值；MySQL 提示不支持 | 是 |
+| `sql_get_table_health` | 查看 PostgreSQL 表活动与维护状态（seq/index scan、live/dead rows、last vacuum/analyze）；MySQL 提示不支持 | 是 |
+| `sql_list_active_queries` | 列出连接可见的非空闲查询（PG：pg_stat_activity；MySQL：information_schema.PROCESSLIST） | 是 |
+
+**不在范围（v0.9）**：写操作、终止查询、执行 DDL、跨库查询。
+
 ## 2. 技术背景（契约要点，同 dsh-tool-github 已验证）
 
 - `defineTool` 契约：参数自动校验、输出规范 JSON 值、`exec.signal` 透传、`presentCall`/`presentResult` 纯函数。
@@ -171,6 +182,11 @@
 ### 阶段 11：v0.8 扩展（表发现、注释、依赖与容量）
 - [x] Driver 新增 `searchTables`/`databaseSize`/`listTableSizes`/`getTableComments`/`listIncomingForeignKeys` + PG/MySQL 实现
 - [x] 注册 5 个新工具：`sql_search_tables`/`sql_database_size`/`sql_list_table_sizes`/`sql_get_table_comments`/`sql_list_incoming_foreign_keys` + UI 呈现
+- [x] 验收：mock 单测；typecheck；build；README 双语更新 + 推送
+
+### 阶段 12：v0.9 扩展（数据质量、例程源码与数据库活动）
+- [x] Driver 新增 `getColumnStats`/`getFunctionSource`/`listEnumTypes`/`getTableHealth`/`listActiveQueries` + PG/MySQL 实现
+- [x] 注册 5 个新工具：`sql_get_column_stats`/`sql_get_function_source`/`sql_list_enum_types`/`sql_get_table_health`/`sql_list_active_queries` + UI 呈现
 - [x] 验收：mock 单测；typecheck；build；README 双语更新 + 推送
 
 ## 4. 开发日志
@@ -274,8 +290,19 @@
 - Driver 接口新增 `searchTables`/`databaseSize`/`listTableSizes`/`getTableComments`/`listIncomingForeignKeys`，PG/MySQL 双驱动实现。
   - PG 表搜索：`pg_class.relkind` 区分 table/view/materialized view；容量：`pg_total_relation_size`/`pg_relation_size`/`pg_indexes_size`；注释：`obj_description`/`col_description`；入向外键：information_schema 三表 JOIN 按被引用表过滤。
   - MySQL 表搜索：`information_schema.tables` 按 LIKE；容量：`DATA_LENGTH` + `INDEX_LENGTH`；注释：`TABLE_COMMENT`/`COLUMN_COMMENT`；入向外键：`REFERENCED_TABLE_NAME` 过滤。
-- 注册 5 个新工具：`sql_search_tables`/`sql_database_size`/`sql_list_table_sizes`/`sql_get_table_comments`/`sql_list_incoming_foreign_keys`（共 31 工具）。
+- 注册 5 个新工具：`sql_search_tables`/`sql_database_size`/`sql_list_table_sizes`/`sql_get_table_comments`/`sql_list_incoming_foreign_keys`（共 32 工具）。
 - 测试增至 115/115（client 39 + tools 76）；typecheck / build 全绿。
+
+### 2026-08-25（阶段 12 规划）
+- 规划 v0.9：数据质量、例程源码、枚举类型、表健康与活动查询诊断，全部保持只读安全模型。
+- `sql_list_active_queries` 会返回查询文本，工具描述明确这是诊断用途；插件不提供终止查询能力。
+
+### 2026-08-25（阶段 12 实现）
+- Driver 接口新增 `getColumnStats`/`getFunctionSource`/`listEnumTypes`/`getTableHealth`/`listActiveQueries`，PG/MySQL 双驱动实现。
+  - PG 列统计：`COUNT` + `COUNT(DISTINCT)` 聚合；函数源码：`pg_get_functiondef`；枚举：`pg_enum` 按 `enumsortorder` 分组；表健康：`pg_stat_user_tables`；活动查询：`pg_stat_activity`。
+  - MySQL 列统计：`COUNT` + `COUNT(DISTINCT)` 聚合；函数源码：`information_schema.routines` + `SHOW CREATE FUNCTION/PROCEDURE`；活动查询：`information_schema.PROCESSLIST`；枚举/表健康不支持。
+- 注册 5 个新工具：`sql_get_column_stats`/`sql_get_function_source`/`sql_list_enum_types`/`sql_get_table_health`/`sql_list_active_queries`（共 37 工具）。
+- 测试增至 130/130（client 42 + tools 88）；typecheck / build 全绿。
 
 ## 5. 风险与决策记录
 
@@ -298,4 +325,6 @@
 | 2026-08-25 | PG 数据库容量不拆分 data/index | `pg_database_size` 提供数据库总量；dataBytes/indexBytes 用 `null` 表达不可用，避免伪造明细 |
 | 2026-08-25 | MySQL mysql.user 可能无权限 | `sql_list_roles` 失败时退化到 `USER_PRIVILEGES`，宁可返回较少属性也不让工具直接报错 |
 | 2026-08-25 | 精确行数可能扫描大表 | `sql_get_table_row_count` 保持精确语义，工具描述明确提示耗时风险 |
+| 2026-08-25 | 列统计可能扫描大表 | DISTINCT 聚合可能较慢，工具描述明确提示；保持精确结果，不做抽样近似 |
+| 2026-08-25 | 活动查询包含 SQL 文本 | 面向诊断场景保留完整文本，但不在 UI render 中铺满长查询（截断到 200 字符预览） |
 | 2026-08-14 | 风险：npm 发布受 2FA 限制 | 同 dsh-tool-github，先 GitHub 安装方式 |

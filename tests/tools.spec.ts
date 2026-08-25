@@ -65,6 +65,41 @@ function mockDriver(overrides: Partial<Driver> = {}): Driver {
     listIncomingForeignKeys: vi.fn(async () => [
       { name: 'orders_user_id_fkey', table: 'orders', column: 'user_id', referencedTable: 'users', referencedColumn: 'id' },
     ]),
+    getColumnStats: vi.fn(async () => ({
+      table: 'users',
+      column: 'email',
+      rowCount: 100,
+      nonNullCount: 95,
+      nullCount: 5,
+      distinctCount: 90,
+      distinctRatio: 90 / 95,
+    })),
+    getFunctionSource: vi.fn(async () => [{
+      name: 'add',
+      kind: 'function',
+      arguments: 'a int, b int',
+      language: 'sql',
+      source: 'CREATE FUNCTION public.add(a integer, b integer) RETURNS integer LANGUAGE sql AS ...',
+    }]),
+    listEnumTypes: vi.fn(async () => [{ name: 'order_status', values: ['new', 'paid'] }]),
+    getTableHealth: vi.fn(async () => ({
+      table: 'users',
+      supported: true,
+      seqScans: 10,
+      indexScans: 20,
+      liveRows: 100,
+      deadRows: 3,
+      lastVacuum: '2026-08-25 12:00:00',
+      lastAnalyze: '2026-08-25 12:00:00',
+    })),
+    listActiveQueries: vi.fn(async () => [{
+      id: '7',
+      user: 'app',
+      database: 'db',
+      state: 'active',
+      durationSeconds: 1,
+      query: 'SELECT 1',
+    }]),
     close: vi.fn(async () => {}),
     ...overrides,
   }
@@ -79,11 +114,16 @@ describe('tool definitions', () => {
       'sql_database_size',
       'sql_describe_table',
       'sql_explain',
+      'sql_get_column_stats',
+      'sql_get_function_source',
       'sql_get_schema',
       'sql_get_table_comments',
+      'sql_get_table_health',
       'sql_get_table_row_count',
+      'sql_list_active_queries',
       'sql_list_constraints',
       'sql_list_databases',
+      'sql_list_enum_types',
       'sql_list_extensions',
       'sql_list_foreign_keys',
       'sql_list_functions',
@@ -189,6 +229,12 @@ describe('tool definitions', () => {
     await expect(comments.execute({} as never, exec())).rejects.toThrow()
     const incoming = tools()['sql_list_incoming_foreign_keys']
     await expect(incoming.execute({} as never, exec())).rejects.toThrow()
+    const columnStats = tools()['sql_get_column_stats']
+    await expect(columnStats.execute({} as never, exec())).rejects.toThrow()
+    const functionSource = tools()['sql_get_function_source']
+    await expect(functionSource.execute({} as never, exec())).rejects.toThrow()
+    const tableHealth = tools()['sql_get_table_health']
+    await expect(tableHealth.execute({} as never, exec())).rejects.toThrow()
   })
 
   it('sql_explain prefixes EXPLAIN when missing and passes read-only check', async () => {
@@ -593,6 +639,97 @@ describe('tool definitions', () => {
     expect(text).toContain('orders.user_id')
     expect(text).toContain('users.id')
   })
+
+  it('sql_get_column_stats returns and renders stats', async () => {
+    const tool = tools()['sql_get_column_stats']
+    const result = await tool.execute({ table: 'users', column: 'email' }, exec())
+    expect(result).toEqual({
+      table: 'users',
+      column: 'email',
+      rowCount: 100,
+      nonNullCount: 95,
+      nullCount: 5,
+      distinctCount: 90,
+      distinctRatio: 90 / 95,
+    })
+    const blocks = (tool.output as { render: (a: unknown, v: any) => unknown }).render({ table: 'users', column: 'email' }, {
+      table: 'users', column: 'email', rowCount: 100, nonNullCount: 95, nullCount: 5, distinctCount: 90, distinctRatio: 90 / 95,
+    })
+    const text = JSON.stringify(blocks)
+    expect(text).toContain('email')
+    expect(text).toContain('distinct ratio: 0.9474')
+  })
+
+  it('sql_get_function_source returns and renders source', async () => {
+    const tool = tools()['sql_get_function_source']
+    const result = await tool.execute({ name: 'add' }, exec())
+    expect(result).toEqual({
+      name: 'add',
+      sources: [{
+        name: 'add',
+        kind: 'function',
+        arguments: 'a int, b int',
+        language: 'sql',
+        source: 'CREATE FUNCTION public.add(a integer, b integer) RETURNS integer LANGUAGE sql AS ...',
+      }],
+    })
+    const blocks = (tool.output as { render: (a: unknown, v: any) => unknown }).render({ name: 'add' }, {
+      name: 'add',
+      sources: [{ name: 'add', kind: 'function', arguments: 'a int, b int', language: 'sql', source: 'CREATE FUNCTION ...' }],
+    })
+    expect(JSON.stringify(blocks)).toContain('CREATE FUNCTION')
+  })
+
+  it('sql_list_enum_types returns supported:true on postgres', async () => {
+    const tool = tools()['sql_list_enum_types']
+    const result = await tool.execute({}, exec())
+    expect(result).toEqual({ supported: true, enumTypes: [{ name: 'order_status', values: ['new', 'paid'] }] })
+    const blocks = (tool.output as { render: (a: unknown, v: any) => unknown }).render({}, {
+      supported: true, enumTypes: [{ name: 'order_status', values: ['new', 'paid'] }],
+    })
+    expect(JSON.stringify(blocks)).toContain('new, paid')
+  })
+
+  it('sql_list_enum_types reports not supported on mysql', async () => {
+    const client = new DbClient({
+      type: 'mysql', host: 'localhost', user: 'u', password: 'p', database: 'db',
+    }, mockDriver())
+    const tool = createTools(client).find(t => t.name === 'sql_list_enum_types')!
+    const result = await tool.execute({}, exec())
+    expect(result).toEqual({ supported: false, enumTypes: [] })
+  })
+
+  it('sql_get_table_health returns and renders health', async () => {
+    const tool = tools()['sql_get_table_health']
+    const result = await tool.execute({ table: 'users' }, exec())
+    expect(result).toMatchObject({ table: 'users', supported: true, seqScans: 10, deadRows: 3 })
+    const blocks = (tool.output as { render: (a: unknown, v: any) => unknown }).render({ table: 'users' }, {
+      table: 'users', supported: true, seqScans: 10, indexScans: 20, liveRows: 100, deadRows: 3,
+      lastVacuum: '2026-08-25 12:00:00', lastAnalyze: '2026-08-25 12:00:00',
+    })
+    expect(JSON.stringify(blocks)).toContain('dead rows: 3')
+  })
+
+  it('sql_get_table_health reports not supported on mysql', async () => {
+    const client = new DbClient({
+      type: 'mysql', host: 'localhost', user: 'u', password: 'p', database: 'db',
+    }, mockDriver())
+    const tool = createTools(client).find(t => t.name === 'sql_get_table_health')!
+    const result = await tool.execute({ table: 'users' }, exec())
+    expect(result).toMatchObject({ supported: false })
+  })
+
+  it('sql_list_active_queries returns and renders queries', async () => {
+    const tool = tools()['sql_list_active_queries']
+    const result = await tool.execute({}, exec())
+    expect(result).toEqual({
+      queries: [{ id: '7', user: 'app', database: 'db', state: 'active', durationSeconds: 1, query: 'SELECT 1' }],
+    })
+    const blocks = (tool.output as { render: (a: unknown, v: any) => unknown }).render({}, {
+      queries: [{ id: '7', user: 'app', database: 'db', state: 'active', durationSeconds: 1, query: 'SELECT 1' }],
+    })
+    expect(JSON.stringify(blocks)).toContain('SELECT 1')
+  })
 })
 
 describe('tool presentation (pure render intents)', () => {
@@ -809,5 +946,40 @@ describe('tool presentation (pure render intents)', () => {
     const args = { table: 'users' }
     expect(t.presentCall(args)).toMatchObject({ card: 'generic', kind: 'read', title: 'Incoming FKs: users' })
     expect(t.presentResult(args, { table: 'users', foreignKeys: [{}] })).toMatchObject({ title: 'users: 1 reference(s)' })
+  })
+
+  it('sql_get_column_stats pending and result cards', () => {
+    const t = defs()['sql_get_column_stats'] as any
+    const args = { table: 'users', column: 'email' }
+    expect(t.presentCall(args)).toMatchObject({ card: 'generic', kind: 'read', title: 'Column stats: users.email' })
+    expect(t.presentResult(args, { table: 'users', column: 'email', rowCount: 100 })).toMatchObject({ title: 'Stats: users.email' })
+  })
+
+  it('sql_get_function_source pending and result cards', () => {
+    const t = defs()['sql_get_function_source'] as any
+    const args = { name: 'add' }
+    expect(t.presentCall(args)).toMatchObject({ card: 'generic', kind: 'read', title: 'Function source: add' })
+    expect(t.presentResult(args, { name: 'add', sources: [{}] })).toMatchObject({ title: 'Source: add' })
+  })
+
+  it('sql_list_enum_types pending and result cards', () => {
+    const t = defs()['sql_list_enum_types'] as any
+    expect(t.presentCall({})).toMatchObject({ card: 'generic', kind: 'read', title: 'List enum types' })
+    expect(t.presentResult({}, { supported: true, enumTypes: [{}, {}] })).toMatchObject({ title: '2 enum type(s)' })
+    expect(t.presentResult({}, { supported: false, enumTypes: [] })).toMatchObject({ title: 'Not supported' })
+  })
+
+  it('sql_get_table_health pending and result cards', () => {
+    const t = defs()['sql_get_table_health'] as any
+    const args = { table: 'users' }
+    expect(t.presentCall(args)).toMatchObject({ card: 'generic', kind: 'read', title: 'Table health: users' })
+    expect(t.presentResult(args, { table: 'users', supported: true })).toMatchObject({ title: 'Health: users' })
+    expect(t.presentResult(args, { table: 'users', supported: false })).toMatchObject({ title: 'Not supported' })
+  })
+
+  it('sql_list_active_queries pending and result cards', () => {
+    const t = defs()['sql_list_active_queries'] as any
+    expect(t.presentCall({})).toMatchObject({ card: 'generic', kind: 'read', title: 'List active queries' })
+    expect(t.presentResult({}, { queries: [{}] })).toMatchObject({ title: '1 active query(s)' })
   })
 })

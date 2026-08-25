@@ -89,6 +89,11 @@ Full example: [examples/cordis.yml](examples/cordis.yml).
 | `sql_list_table_sizes` | Disk usage for every table, largest first |
 | `sql_get_table_comments` | Show the table comment and all column comments |
 | `sql_list_incoming_foreign_keys` | Show foreign keys from other tables that reference a target table |
+| `sql_get_column_stats` | Column quality stats: total/non-null/null/distinct values and distinct ratio |
+| `sql_get_function_source` | Return function/procedure source definitions (all matches/catalog + SHOW CREATE) |
+| `sql_list_enum_types` | List PostgreSQL enum types and values; MySQL reports not supported |
+| `sql_get_table_health` | PostgreSQL table activity/maintenance health; MySQL reports not supported |
+| `sql_list_active_queries` | List non-idle queries visible to the connection (query text included) |
 
 ## Development
 

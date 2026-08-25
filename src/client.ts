@@ -199,6 +199,49 @@ export interface TableCommentInfo {
   columns: ColumnComment[]
 }
 
+export interface ColumnStats {
+  table: string
+  column: string
+  rowCount: number
+  nonNullCount: number
+  nullCount: number
+  distinctCount: number
+  distinctRatio: number | null
+}
+
+export interface FunctionSourceInfo {
+  name: string
+  kind: 'function' | 'procedure'
+  arguments: string
+  language: string | null
+  source: string
+}
+
+export interface EnumTypeInfo {
+  name: string
+  values: string[]
+}
+
+export interface TableHealth {
+  table: string
+  supported: boolean
+  seqScans: number | null
+  indexScans: number | null
+  liveRows: number | null
+  deadRows: number | null
+  lastVacuum: string | null
+  lastAnalyze: string | null
+}
+
+export interface ActiveQueryInfo {
+  id: string
+  user: string
+  database: string | null
+  state: string | null
+  durationSeconds: number | null
+  query: string
+}
+
 /** SQL driver adapter; implementations live in drivers/* and are dynamically imported. */
 export interface Driver {
   query(sql: string, signal?: AbortSignal): Promise<{ columns: string[]; rows: Array<Record<string, unknown>> }>
@@ -231,6 +274,11 @@ export interface Driver {
   listTableSizes(signal?: AbortSignal): Promise<TableSizeItem[]>
   getTableComments(table: string, signal?: AbortSignal): Promise<TableCommentInfo>
   listIncomingForeignKeys(table: string, signal?: AbortSignal): Promise<ForeignKeyInfo[]>
+  getColumnStats(table: string, column: string, signal?: AbortSignal): Promise<ColumnStats>
+  getFunctionSource(name: string, signal?: AbortSignal): Promise<FunctionSourceInfo[]>
+  listEnumTypes(signal?: AbortSignal): Promise<EnumTypeInfo[]>
+  getTableHealth(table: string, signal?: AbortSignal): Promise<TableHealth>
+  listActiveQueries(signal?: AbortSignal): Promise<ActiveQueryInfo[]>
   close(): Promise<void>
 }
 
@@ -618,6 +666,59 @@ export class DbClient {
     const driver = await this.getDriver()
     try {
       return await driver.listIncomingForeignKeys(table, this.combinedSignal(signal))
+    } catch (error) {
+      if (error instanceof SqlError) throw error
+      throw new SqlError(error instanceof Error ? error.message : String(error), 'query')
+    }
+  }
+
+  async getColumnStats(table: string, column: string, signal?: AbortSignal): Promise<ColumnStats> {
+    assertSafeIdentifier(table, 'table name')
+    assertSafeIdentifier(column, 'column name')
+    const driver = await this.getDriver()
+    try {
+      return await driver.getColumnStats(table, column, this.combinedSignal(signal))
+    } catch (error) {
+      if (error instanceof SqlError) throw error
+      throw new SqlError(error instanceof Error ? error.message : String(error), 'query')
+    }
+  }
+
+  async getFunctionSource(name: string, signal?: AbortSignal): Promise<FunctionSourceInfo[]> {
+    const driver = await this.getDriver()
+    try {
+      return await driver.getFunctionSource(name, this.combinedSignal(signal))
+    } catch (error) {
+      if (error instanceof SqlError) throw error
+      throw new SqlError(error instanceof Error ? error.message : String(error), 'query')
+    }
+  }
+
+  async listEnumTypes(signal?: AbortSignal): Promise<EnumTypeInfo[]> {
+    const driver = await this.getDriver()
+    try {
+      return await driver.listEnumTypes(this.combinedSignal(signal))
+    } catch (error) {
+      if (error instanceof SqlError) throw error
+      throw new SqlError(error instanceof Error ? error.message : String(error), 'query')
+    }
+  }
+
+  async getTableHealth(table: string, signal?: AbortSignal): Promise<TableHealth> {
+    assertSafeIdentifier(table, 'table name')
+    const driver = await this.getDriver()
+    try {
+      return await driver.getTableHealth(table, this.combinedSignal(signal))
+    } catch (error) {
+      if (error instanceof SqlError) throw error
+      throw new SqlError(error instanceof Error ? error.message : String(error), 'query')
+    }
+  }
+
+  async listActiveQueries(signal?: AbortSignal): Promise<ActiveQueryInfo[]> {
+    const driver = await this.getDriver()
+    try {
+      return await driver.listActiveQueries(this.combinedSignal(signal))
     } catch (error) {
       if (error instanceof SqlError) throw error
       throw new SqlError(error instanceof Error ? error.message : String(error), 'query')

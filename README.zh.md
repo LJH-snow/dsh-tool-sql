@@ -89,6 +89,11 @@ npm install /path/to/dsh-tool-sql
 | `sql_list_table_sizes` | 列出所有表的磁盘占用，按总量从大到小 |
 | `sql_get_table_comments` | 查看表注释与全部列注释 |
 | `sql_list_incoming_foreign_keys` | 查看引用指定表的外键，用于子表影响分析 |
+| `sql_get_column_stats` | 列质量分析：总数/非空/空值/去重值/去重比例 |
+| `sql_get_function_source` | 返回函数/存储过程源码（匹配全部重载或 SHOW CREATE） |
+| `sql_list_enum_types` | 列出 PostgreSQL enum 类型及值；MySQL 提示不支持 |
+| `sql_get_table_health` | 查看 PostgreSQL 表活动/维护健康；MySQL 提示不支持 |
+| `sql_list_active_queries` | 列出连接可见的非空闲查询（包含查询文本） |
 
 ## 开发
 

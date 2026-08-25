@@ -1,4 +1,4 @@
-import type { Driver, DbConfig, ColumnInfo, IndexInfo, DatabaseInfo, TableStat, ColumnMatch, ViewInfo, TableSize, SchemaInfo, FunctionInfo, TriggerInfo, ForeignKeyInfo, SchemaDump, ExtensionInfo, SequenceInfo, ConstraintInfo, DatabaseItem, RoleInfo, GrantInfo, MaterializedViewInfo, PartitionInfo, TableRowCount, TableMatch, DatabaseSize, TableSizeItem, TableCommentInfo } from '../client.js'
+import type { Driver, DbConfig, ColumnInfo, IndexInfo, DatabaseInfo, TableStat, ColumnMatch, ViewInfo, TableSize, SchemaInfo, FunctionInfo, TriggerInfo, ForeignKeyInfo, SchemaDump, ExtensionInfo, SequenceInfo, ConstraintInfo, DatabaseItem, RoleInfo, GrantInfo, MaterializedViewInfo, PartitionInfo, TableRowCount, TableMatch, DatabaseSize, TableSizeItem, TableCommentInfo, ColumnStats, FunctionSourceInfo, EnumTypeInfo, TableHealth, ActiveQueryInfo } from '../client.js'
 import { assertSafeIdentifier } from '../client.js'
 
 export async function createMysqlDriver(config: DbConfig): Promise<Driver> {
@@ -490,6 +490,110 @@ export async function createMysqlDriver(config: DbConfig): Promise<Driver> {
         column: r.column_name,
         referencedTable: r.referenced_table,
         referencedColumn: r.referenced_column,
+      }))
+    },
+    async getColumnStats(table, column) {
+      assertSafeIdentifier(table, 'table name')
+      assertSafeIdentifier(column, 'column name')
+      const [rows] = await conn.query(
+        `SELECT COUNT(*) AS row_count,
+                COUNT(\`${column}\`) AS non_null,
+                COUNT(*) - COUNT(\`${column}\`) AS null_count,
+                COUNT(DISTINCT \`${column}\`) AS distinct_count
+         FROM \`${table}\``,
+      )
+      const list = rows as Array<{
+        row_count: number | string
+        non_null: number | string | null
+        null_count: number | string | null
+        distinct_count: number | string | null
+      }>
+      const row = list[0] ?? {}
+      const nonNullCount = Number(row.non_null ?? 0)
+      const distinctCount = Number(row.distinct_count ?? 0)
+      return {
+        table,
+        column,
+        rowCount: Number(row.row_count ?? 0),
+        nonNullCount,
+        nullCount: Number(row.null_count ?? 0),
+        distinctCount,
+        distinctRatio: nonNullCount > 0 ? distinctCount / nonNullCount : null,
+      } as ColumnStats
+    },
+    async getFunctionSource(name) {
+      const [routineRows] = await conn.query(
+        `SELECT ROUTINE_NAME AS name, ROUTINE_TYPE AS kind, EXTERNAL_LANGUAGE AS language
+         FROM information_schema.routines
+         WHERE ROUTINE_SCHEMA = DATABASE() AND ROUTINE_NAME = ?
+         ORDER BY ROUTINE_NAME, ROUTINE_TYPE`,
+        [name],
+      )
+      const routines = routineRows as Array<{
+        name: string
+        kind: 'FUNCTION' | 'PROCEDURE'
+        language: string | null
+      }>
+      if (routines.length === 0) throw new Error(`Function "${name}" not found.`)
+      const result: FunctionSourceInfo[] = []
+      for (const routine of routines) {
+        const quoted = routine.name.replace(/`/g, '``')
+        const [sourceRows] = await conn.query(
+          routine.kind === 'PROCEDURE'
+            ? `SHOW CREATE PROCEDURE \`${quoted}\``
+            : `SHOW CREATE FUNCTION \`${quoted}\``,
+        )
+        const sourceList = sourceRows as Array<Record<string, unknown>>
+        const row = sourceList[0] ?? {}
+        const key = Object.keys(row).find(k => /^create (function|procedure)$/i.test(k))
+        result.push({
+          name: routine.name,
+          kind: routine.kind.toLowerCase() as FunctionSourceInfo['kind'],
+          arguments: '',
+          language: routine.language ?? null,
+          source: key ? String(row[key] ?? '') : '',
+        })
+      }
+      return result
+    },
+    async listEnumTypes() {
+      return [] as EnumTypeInfo[]
+    },
+    async getTableHealth(table) {
+      return {
+        table,
+        supported: false,
+        seqScans: null,
+        indexScans: null,
+        liveRows: null,
+        deadRows: null,
+        lastVacuum: null,
+        lastAnalyze: null,
+      } as TableHealth
+    },
+    async listActiveQueries() {
+      const [rows] = await conn.query(
+        `SELECT ID AS id, USER AS user, DB AS database, STATE AS state,
+                TIME AS duration_seconds, IFNULL(INFO, '') AS query
+         FROM information_schema.PROCESSLIST
+         WHERE COMMAND <> 'Sleep' AND INFO IS NOT NULL AND INFO <> ''
+         ORDER BY TIME DESC`,
+      )
+      const list = rows as Array<{
+        id: number | string
+        user: string
+        database: string | null
+        state: string | null
+        duration_seconds: number | string | null
+        query: string
+      }>
+      return list.map<ActiveQueryInfo>(r => ({
+        id: String(r.id),
+        user: r.user,
+        database: r.database,
+        state: r.state,
+        durationSeconds: r.duration_seconds === null || r.duration_seconds === undefined ? null : Number(r.duration_seconds),
+        query: r.query,
       }))
     },
     async close() {
