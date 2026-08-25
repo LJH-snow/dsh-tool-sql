@@ -116,6 +116,21 @@ export interface ExtensionInfo {
   version: string | null
 }
 
+export interface SequenceInfo {
+  name: string
+  dataType: string | null
+  startValue: string | null
+  increment: string | null
+}
+
+export interface ConstraintInfo {
+  name: string
+  table: string
+  type: 'PRIMARY KEY' | 'UNIQUE' | 'CHECK'
+  columns: string[]
+  definition: string | null
+}
+
 /** SQL driver adapter; implementations live in drivers/* and are dynamically imported. */
 export interface Driver {
   query(sql: string, signal?: AbortSignal): Promise<{ columns: string[]; rows: Array<Record<string, unknown>> }>
@@ -134,6 +149,9 @@ export interface Driver {
   listForeignKeys(signal?: AbortSignal): Promise<ForeignKeyInfo[]>
   schemaDump(signal?: AbortSignal): Promise<SchemaDump>
   listExtensions(signal?: AbortSignal): Promise<ExtensionInfo[]>
+  listSchemas(signal?: AbortSignal): Promise<string[]>
+  listSequences(signal?: AbortSignal): Promise<SequenceInfo[]>
+  listConstraints(signal?: AbortSignal): Promise<ConstraintInfo[]>
   close(): Promise<void>
 }
 
@@ -291,6 +309,36 @@ export class DbClient {
     const driver = await this.getDriver()
     try {
       return await driver.listViews(this.combinedSignal(signal))
+    } catch (error) {
+      if (error instanceof SqlError) throw error
+      throw new SqlError(error instanceof Error ? error.message : String(error), 'query')
+    }
+  }
+
+  async listSchemas(signal?: AbortSignal): Promise<string[]> {
+    const driver = await this.getDriver()
+    try {
+      return await driver.listSchemas(this.combinedSignal(signal))
+    } catch (error) {
+      if (error instanceof SqlError) throw error
+      throw new SqlError(error instanceof Error ? error.message : String(error), 'query')
+    }
+  }
+
+  async listSequences(signal?: AbortSignal): Promise<SequenceInfo[]> {
+    const driver = await this.getDriver()
+    try {
+      return await driver.listSequences(this.combinedSignal(signal))
+    } catch (error) {
+      if (error instanceof SqlError) throw error
+      throw new SqlError(error instanceof Error ? error.message : String(error), 'query')
+    }
+  }
+
+  async listConstraints(signal?: AbortSignal): Promise<ConstraintInfo[]> {
+    const driver = await this.getDriver()
+    try {
+      return await driver.listConstraints(this.combinedSignal(signal))
     } catch (error) {
       if (error instanceof SqlError) throw error
       throw new SqlError(error instanceof Error ? error.message : String(error), 'query')

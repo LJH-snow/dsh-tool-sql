@@ -1,4 +1,4 @@
-import type { Driver, DbConfig, ColumnInfo, IndexInfo, DatabaseInfo, TableStat, ColumnMatch, ViewInfo, TableSize, SchemaInfo, FunctionInfo, TriggerInfo, ForeignKeyInfo, SchemaDump, ExtensionInfo } from '../client.js'
+import type { Driver, DbConfig, ColumnInfo, IndexInfo, DatabaseInfo, TableStat, ColumnMatch, ViewInfo, TableSize, SchemaInfo, FunctionInfo, TriggerInfo, ForeignKeyInfo, SchemaDump, ExtensionInfo, SequenceInfo, ConstraintInfo } from '../client.js'
 import { SqlError, assertSafeIdentifier } from '../client.js'
 
 export async function createPostgresDriver(config: DbConfig): Promise<Driver> {
@@ -48,6 +48,44 @@ export async function createPostgresDriver(config: DbConfig): Promise<Driver> {
       `SELECT viewname AS name, definition FROM pg_views WHERE schemaname = 'public' ORDER BY viewname`,
     )
     return result.rows.map<ViewInfo>(r => ({ name: r.name, definition: r.definition }))
+  }
+
+  async function listConstraints(): Promise<ConstraintInfo[]> {
+    const result = await client.query<{
+      name: string
+      table: string
+      type: string
+      definition: string
+      columns: string[] | null
+    }>(
+      `SELECT con.conname AS name,
+              c.relname AS table,
+              CASE con.contype
+                WHEN 'p' THEN 'PRIMARY KEY'
+                WHEN 'u' THEN 'UNIQUE'
+                WHEN 'c' THEN 'CHECK'
+              END AS type,
+              pg_get_constraintdef(con.oid) AS definition,
+              COALESCE(
+                array_agg(a.attname ORDER BY k.ord) FILTER (WHERE a.attname IS NOT NULL),
+                ARRAY[]::text[]
+              ) AS columns
+       FROM pg_constraint con
+       JOIN pg_class c ON c.oid = con.conrelid
+       JOIN pg_namespace n ON n.oid = c.relnamespace
+       LEFT JOIN LATERAL unnest(con.conkey) WITH ORDINALITY AS k(attnum, ord) ON TRUE
+       LEFT JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = k.attnum
+       WHERE n.nspname = 'public' AND con.contype IN ('p', 'u', 'c') AND con.conrelid <> 0
+       GROUP BY con.oid, con.conname, c.relname, con.contype
+       ORDER BY c.relname, con.conname`,
+    )
+    return result.rows.map<ConstraintInfo>(r => ({
+      name: r.name,
+      table: r.table,
+      type: r.type as ConstraintInfo['type'],
+      columns: r.columns ?? [],
+      definition: r.definition,
+    }))
   }
 
   return {
@@ -165,6 +203,32 @@ export async function createPostgresDriver(config: DbConfig): Promise<Driver> {
     },
     async listViews() {
       return createViews()
+    },
+    async listSchemas() {
+      const result = await client.query<{ schema_name: string }>(
+        `SELECT nspname AS schema_name
+         FROM pg_namespace
+         WHERE nspname NOT LIKE 'pg\\_%' AND nspname <> 'information_schema'
+         ORDER BY nspname`,
+      )
+      return result.rows.map(r => r.schema_name)
+    },
+    async listSequences() {
+      const result = await client.query<{ name: string; data_type: string; start_value: string; increment: string }>(
+        `SELECT sequence_name AS name, data_type, start_value, increment
+         FROM information_schema.sequences
+         WHERE sequence_schema = 'public'
+         ORDER BY sequence_name`,
+      )
+      return result.rows.map<SequenceInfo>(r => ({
+        name: r.name,
+        dataType: r.data_type,
+        startValue: r.start_value,
+        increment: r.increment,
+      }))
+    },
+    async listConstraints() {
+      return listConstraints()
     },
     async tableSize(table) {
       const result = await client.query<{ total: string; data: string; index: string }>(

@@ -71,6 +71,12 @@ function mockDriver(overrides: Partial<Driver> = {}): Driver {
       views: [{ name: 'active_users', definition: 'SELECT * FROM users' }],
     })),
     listExtensions: vi.fn(async () => [{ name: 'pg_trgm', version: '1.6' }]),
+    listSchemas: vi.fn(async () => ['public', 'audit']),
+    listSequences: vi.fn(async () => [{ name: 'users_id_seq', dataType: 'integer', startValue: '1', increment: '1' }]),
+    listConstraints: vi.fn(async () => [
+      { name: 'users_pkey', table: 'users', type: 'PRIMARY KEY', columns: ['id'], definition: 'PRIMARY KEY (id)' },
+      { name: 'users_age_check', table: 'users', type: 'CHECK', columns: [], definition: 'CHECK ((age >= 0))' },
+    ]),
     close: vi.fn(async () => {}),
     ...overrides,
   }
@@ -269,5 +275,23 @@ describe('DbClient v0.2 methods', () => {
   it('listExtensions returns extension info', async () => {
     const client = makeClient(mockDriver())
     expect(await client.listExtensions()).toEqual([{ name: 'pg_trgm', version: '1.6' }])
+  })
+
+  it('listSchemas/listSequences/listConstraints return discovery info', async () => {
+    const client = makeClient(mockDriver())
+    expect(await client.listSchemas()).toEqual(['public', 'audit'])
+    expect(await client.listSequences()).toEqual([
+      { name: 'users_id_seq', dataType: 'integer', startValue: '1', increment: '1' },
+    ])
+    expect(await client.listConstraints()).toEqual([
+      { name: 'users_pkey', table: 'users', type: 'PRIMARY KEY', columns: ['id'], definition: 'PRIMARY KEY (id)' },
+      { name: 'users_age_check', table: 'users', type: 'CHECK', columns: [], definition: 'CHECK ((age >= 0))' },
+    ])
+  })
+
+  it('maps driver errors from v0.6 methods to SqlError', async () => {
+    const driver = mockDriver({ listConstraints: vi.fn(async () => { throw new Error('catalog unavailable') }) })
+    const client = makeClient(driver)
+    await expect(client.listConstraints()).rejects.toMatchObject({ kind: 'query', message: 'catalog unavailable' })
   })
 })

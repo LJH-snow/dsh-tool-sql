@@ -67,6 +67,9 @@ npm install /path/to/dsh-tool-sql
 | `sql_search_columns` | 按列名跨表搜索（支持 `%`/`_`，最多 100 条） |
 | `sql_ping` | 连接测试（`SELECT 1`，返回往返延迟） |
 | `sql_list_views` | 列出视图及定义 |
+| `sql_list_schemas` | 列出可见 schema（PostgreSQL）或数据库/schema（MySQL） |
+| `sql_list_sequences` | 列出序列（PostgreSQL）；MySQL 提示不支持 |
+| `sql_list_constraints` | 列出主键、唯一、检查约束 |
 | `sql_table_size` | 表占用空间（数据/索引/合计字节） |
 | `sql_get_schema` | 查看建表 DDL（MySQL：服务器原样；PostgreSQL：catalog 生成简化版） |
 | `sql_preview` | 预览表前 N 行数据（表名严格校验，LIMIT 1-100，默认 10） |

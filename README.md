@@ -67,6 +67,9 @@ Full example: [examples/cordis.yml](examples/cordis.yml).
 | `sql_search_columns` | Search columns by name across tables (supports `%`/`_`, up to 100) |
 | `sql_ping` | Test the connection with `SELECT 1`, report round-trip latency |
 | `sql_list_views` | List views with their definitions |
+| `sql_list_schemas` | List visible schemas (PostgreSQL) or databases/schemas (MySQL) |
+| `sql_list_sequences` | List sequences (PostgreSQL); MySQL reports not supported |
+| `sql_list_constraints` | List primary key, unique, and check constraints |
 | `sql_table_size` | Table disk usage (data, index, total bytes) |
 | `sql_get_schema` | `CREATE TABLE` DDL (MySQL: server DDL; PostgreSQL: simplified from catalog) |
 | `sql_preview` | Preview the first rows of a table (validated table name, LIMIT 1-100, default 10) |

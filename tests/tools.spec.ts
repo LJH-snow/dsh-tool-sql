@@ -39,6 +39,12 @@ function mockDriver(overrides: Partial<Driver> = {}): Driver {
       views: [{ name: 'active_users', definition: 'SELECT * FROM users' }],
     })),
     listExtensions: vi.fn(async () => [{ name: 'pg_trgm', version: '1.6' }]),
+    listSchemas: vi.fn(async () => ['public', 'audit']),
+    listSequences: vi.fn(async () => [{ name: 'users_id_seq', dataType: 'integer', startValue: '1', increment: '1' }]),
+    listConstraints: vi.fn(async () => [
+      { name: 'users_pkey', table: 'users', type: 'PRIMARY KEY', columns: ['id'], definition: 'PRIMARY KEY (id)' },
+      { name: 'users_age_check', table: 'users', type: 'CHECK', columns: [], definition: 'CHECK ((age >= 0))' },
+    ]),
     close: vi.fn(async () => {}),
     ...overrides,
   }
@@ -53,10 +59,13 @@ describe('tool definitions', () => {
       'sql_describe_table',
       'sql_explain',
       'sql_get_schema',
+      'sql_list_constraints',
       'sql_list_extensions',
       'sql_list_foreign_keys',
       'sql_list_functions',
       'sql_list_indexes',
+      'sql_list_schemas',
+      'sql_list_sequences',
       'sql_list_tables',
       'sql_list_triggers',
       'sql_list_views',
@@ -328,6 +337,52 @@ describe('tool definitions', () => {
     expect(driver.query).toHaveBeenCalledWith('SELECT * FROM users', expect.anything())
   })
 
+  it('sql_list_schemas returns schemas and renders them', async () => {
+    const tool = tools()['sql_list_schemas']
+    const result = await tool.execute({}, exec())
+    expect(result).toEqual({ schemas: ['public', 'audit'] })
+    const blocks = (tool.output as { render: (a: unknown, v: any) => unknown }).render({}, { schemas: ['public', 'audit'] })
+    expect(JSON.stringify(blocks)).toContain('audit')
+  })
+
+  it('sql_list_sequences returns supported:true on postgres and renders sequence info', async () => {
+    const tool = tools()['sql_list_sequences']
+    const result = await tool.execute({}, exec())
+    expect(result).toEqual({
+      supported: true,
+      sequences: [{ name: 'users_id_seq', dataType: 'integer', startValue: '1', increment: '1' }],
+    })
+    const blocks = (tool.output as { render: (a: unknown, v: any) => unknown }).render({}, {
+      supported: true,
+      sequences: [{ name: 'users_id_seq', dataType: 'integer', startValue: '1', increment: '1' }],
+    })
+    expect(JSON.stringify(blocks)).toContain('users_id_seq')
+  })
+
+  it('sql_list_sequences reports not supported on mysql', async () => {
+    const client = new DbClient({
+      type: 'mysql', host: 'localhost', user: 'u', password: 'p', database: 'db',
+    }, mockDriver())
+    const tool = createTools(client).find(t => t.name === 'sql_list_sequences')!
+    const result = await tool.execute({}, exec())
+    expect(result).toEqual({ supported: false, sequences: [] })
+  })
+
+  it('sql_list_constraints returns constraints and renders them', async () => {
+    const tool = tools()['sql_list_constraints']
+    const result = await tool.execute({}, exec())
+    expect(result).toEqual({
+      constraints: [
+        { name: 'users_pkey', table: 'users', type: 'PRIMARY KEY', columns: ['id'], definition: 'PRIMARY KEY (id)' },
+        { name: 'users_age_check', table: 'users', type: 'CHECK', columns: [], definition: 'CHECK ((age >= 0))' },
+      ],
+    })
+    const blocks = (tool.output as { render: (a: unknown, v: any) => unknown }).render({}, {
+      constraints: [{ name: 'users_pkey', table: 'users', type: 'PRIMARY KEY', columns: ['id'] }],
+    })
+    expect(JSON.stringify(blocks)).toContain('PRIMARY KEY')
+  })
+
   it('sql_list_extensions returns supported:true and extensions on postgres', async () => {
     const client = makeClient(mockDriver())
     const tool = createTools(client).find(t => t.name === 'sql_list_extensions')!
@@ -417,6 +472,25 @@ describe('tool presentation (pure render intents)', () => {
     const t = defs()['sql_list_views'] as any
     expect(t.presentCall({})).toMatchObject({ card: 'generic', kind: 'read', title: 'List views' })
     expect(t.presentResult({}, { views: [{}, {}] })).toMatchObject({ title: '2 view(s)' })
+  })
+
+  it('sql_list_schemas pending and result cards', () => {
+    const t = defs()['sql_list_schemas'] as any
+    expect(t.presentCall({})).toMatchObject({ card: 'generic', kind: 'read', title: 'List schemas' })
+    expect(t.presentResult({}, { schemas: ['public', 'audit'] })).toMatchObject({ title: '2 schema(s)' })
+  })
+
+  it('sql_list_sequences pending and result cards', () => {
+    const t = defs()['sql_list_sequences'] as any
+    expect(t.presentCall({})).toMatchObject({ card: 'generic', kind: 'read', title: 'List sequences' })
+    expect(t.presentResult({}, { supported: true, sequences: [{}] })).toMatchObject({ title: '1 sequence(s)' })
+    expect(t.presentResult({}, { supported: false, sequences: [] })).toMatchObject({ title: 'Not supported' })
+  })
+
+  it('sql_list_constraints pending and result cards', () => {
+    const t = defs()['sql_list_constraints'] as any
+    expect(t.presentCall({})).toMatchObject({ card: 'generic', kind: 'read', title: 'List constraints' })
+    expect(t.presentResult({}, { constraints: [{}, {}] })).toMatchObject({ title: '2 constraint(s)' })
   })
 
   it('sql_table_size pending and result cards', () => {

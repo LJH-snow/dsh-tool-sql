@@ -474,6 +474,141 @@ export function createTools(client: DbClient) {
     }),
 
     defineTool({
+      name: 'sql_list_schemas',
+      description:
+        'List visible database schemas/namespaces. PostgreSQL returns schemas in the current database; MySQL returns databases/schemas accessible to the connection.',
+      parameters: {},
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            schemas: { type: 'array', items: { type: 'string' }, description: 'Schema/database names' },
+          },
+        },
+        render: (_args, value) => {
+          const schemas = value.schemas ?? []
+          if (schemas.length === 0) return [{ type: 'text', text: '(no visible schemas)' }]
+          return [{ type: 'text', text: schemas.join('\n') }]
+        },
+      },
+      presentCall(): ToolCallView {
+        return { card: 'generic', title: `List schemas`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { schemas?: string[] }
+        return { card: 'generic', title: `${v.schemas?.length ?? 0} schema(s)` }
+      },
+      async execute(_args, exec) {
+        return { schemas: await client.listSchemas(exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_list_sequences',
+      description:
+        'List sequences in the current database. PostgreSQL returns sequences from the public schema with type/start/increment; MySQL has no sequence object and reports unsupported.',
+      parameters: {},
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            supported: { type: 'boolean', description: 'Whether the database has sequence objects (PostgreSQL: true, MySQL: false)' },
+            sequences: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  name: { type: 'string', description: 'Sequence name' },
+                  dataType: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Sequence data type' },
+                  startValue: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Sequence start value' },
+                  increment: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Sequence increment' },
+                },
+              },
+              description: 'Sequences',
+            },
+          },
+        },
+        render: (_args, value) => {
+          if (!value.supported) return [{ type: 'text', text: 'This database (MySQL) does not support sequences.' }]
+          const sequences = value.sequences ?? []
+          if (sequences.length === 0) return [{ type: 'text', text: '(no sequences)' }]
+          const lines = ['name\ttype\tstart\tincrement']
+          lines.push('---\t---\t---\t---')
+          for (const s of sequences) {
+            lines.push(`${s.name}\t${s.dataType ?? ''}\t${s.startValue ?? ''}\t${s.increment ?? ''}`)
+          }
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(): ToolCallView {
+        return { card: 'generic', title: `List sequences`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { supported?: boolean; sequences?: unknown[] }
+        return { card: 'generic', title: v.supported ? `${v.sequences?.length ?? 0} sequence(s)` : 'Not supported' }
+      },
+      async execute(_args, exec) {
+        if (client.databaseType === 'mysql') {
+          return { supported: false, sequences: [] }
+        }
+        return { supported: true, sequences: await client.listSequences(exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_list_constraints',
+      description:
+        'List primary key, unique, and check constraints in the current database (PostgreSQL: public schema; MySQL: current database).',
+      parameters: {},
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            constraints: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  name: { type: 'string', description: 'Constraint name' },
+                  table: { type: 'string', description: 'Table name' },
+                  type: { type: 'string', enum: ['PRIMARY KEY', 'UNIQUE', 'CHECK'], description: 'Constraint type' },
+                  columns: { type: 'array', items: { type: 'string' }, description: 'Columns covered by the constraint' },
+                  definition: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Constraint definition' },
+                },
+              },
+              description: 'Primary key, unique, and check constraints',
+            },
+          },
+        },
+        render: (_args, value) => {
+          const constraints = value.constraints ?? []
+          if (constraints.length === 0) return [{ type: 'text', text: '(no constraints)' }]
+          const lines = ['table\ttype\tname\tcolumns']
+          lines.push('---\t---\t---\t---')
+          for (const c of constraints) {
+            lines.push(`${c.table}\t${c.type}\t${c.name}\t${(c.columns ?? []).join(', ')}`)
+          }
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(): ToolCallView {
+        return { card: 'generic', title: `List constraints`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { constraints?: unknown[] }
+        return { card: 'generic', title: `${v.constraints?.length ?? 0} constraint(s)` }
+      },
+      async execute(_args, exec) {
+        return { constraints: await client.listConstraints(exec.signal) }
+      },
+    }),
+
+    defineTool({
       name: 'sql_table_size',
       description: 'Show a table\'s disk usage: data size, index size, and total in bytes.',
       parameters: {

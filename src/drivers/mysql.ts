@@ -1,4 +1,4 @@
-import type { Driver, DbConfig, ColumnInfo, IndexInfo, DatabaseInfo, TableStat, ColumnMatch, ViewInfo, TableSize, SchemaInfo, FunctionInfo, TriggerInfo, ForeignKeyInfo, SchemaDump, ExtensionInfo } from '../client.js'
+import type { Driver, DbConfig, ColumnInfo, IndexInfo, DatabaseInfo, TableStat, ColumnMatch, ViewInfo, TableSize, SchemaInfo, FunctionInfo, TriggerInfo, ForeignKeyInfo, SchemaDump, ExtensionInfo, SequenceInfo, ConstraintInfo } from '../client.js'
 import { assertSafeIdentifier } from '../client.js'
 
 export async function createMysqlDriver(config: DbConfig): Promise<Driver> {
@@ -132,6 +132,59 @@ export async function createMysqlDriver(config: DbConfig): Promise<Driver> {
       )
       const list = rows as Array<{ name: string; definition: string | null }>
       return list.map<ViewInfo>(r => ({ name: r.name, definition: r.definition }))
+    },
+    async listSchemas() {
+      const [rows] = await conn.query('SHOW SCHEMAS')
+      const list = rows as Array<Record<string, unknown>>
+      const key = Object.keys(list[0] ?? {})[0] ?? 'Schema'
+      return list.map(r => String(r[key]))
+    },
+    async listSequences() {
+      return [] as SequenceInfo[]
+    },
+    async listConstraints() {
+      const [rows] = await conn.query(
+        `SELECT tc.CONSTRAINT_NAME AS name,
+                tc.TABLE_NAME AS table_name,
+                tc.CONSTRAINT_TYPE AS type,
+                kcu.COLUMN_NAME AS column_name,
+                cc.CHECK_CLAUSE AS check_clause
+         FROM information_schema.table_constraints tc
+         LEFT JOIN information_schema.key_column_usage kcu
+           ON tc.CONSTRAINT_SCHEMA = kcu.CONSTRAINT_SCHEMA
+          AND tc.TABLE_NAME = kcu.TABLE_NAME
+          AND tc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME
+         LEFT JOIN information_schema.check_constraints cc
+           ON tc.CONSTRAINT_SCHEMA = cc.CONSTRAINT_SCHEMA
+          AND tc.CONSTRAINT_NAME = cc.CONSTRAINT_NAME
+         WHERE tc.TABLE_SCHEMA = DATABASE()
+           AND tc.CONSTRAINT_TYPE IN ('PRIMARY KEY', 'UNIQUE', 'CHECK')
+         ORDER BY tc.TABLE_NAME, tc.CONSTRAINT_NAME, kcu.ORDINAL_POSITION`,
+      )
+      const list = rows as Array<{
+        name: string
+        table_name: string
+        type: string
+        column_name: string | null
+        check_clause: string | null
+      }>
+      const constraints = new Map<string, ConstraintInfo>()
+      for (const row of list) {
+        const key = `${row.table_name}.${row.name}`
+        let info = constraints.get(key)
+        if (!info) {
+          info = {
+            name: row.name,
+            table: row.table_name,
+            type: row.type as ConstraintInfo['type'],
+            columns: [],
+            definition: row.check_clause ?? null,
+          }
+          constraints.set(key, info)
+        }
+        if (row.column_name) info.columns.push(row.column_name)
+      }
+      return [...constraints.values()]
     },
     async tableSize(table) {
       const [rows] = await conn.query(

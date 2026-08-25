@@ -12,7 +12,7 @@
 | 架构 | 一切皆插件：`ctx.tools.register(defineTool(...))` 注册模型可见工具 |
 | 官方参考 | 与 `dsh-tool-github` 同模式（已验证的 defineTool 契约） |
 | 项目位置 | `deepseek-harness-pro/dsh-tool-sql/`（与 dsh-tool-github 平级） |
-| 状态 | v0.1 完成：3 工具 + 23 测试全绿，已推送 GitHub |
+| 状态 | v0.6 完成：20 工具 + 85 测试全绿，已推送 GitHub |
 
 ### 1.1 目标
 - 让 dsh Agent 能对 PostgreSQL / MySQL 执行**只读**查询：查数据、列表、看表结构。
@@ -67,6 +67,15 @@
 | CI | GitHub Actions：node 22 上 typecheck + test + build，README 徽章 | - |
 
 **不在范围（v0.5）**：写操作、执行 DDL、跨库查询。
+
+### 1.7 范围（v0.6，阶段 9）
+| 工具 | 功能 | 需凭据 |
+|---|---|---|
+| `sql_list_schemas` | 列出可见 schema/数据库（PG：当前库 schema；MySQL：SHOW SCHEMAS/databases） | 是 |
+| `sql_list_sequences` | 列出序列（PG：public schema 的序列；MySQL：不支持返回空并说明） | 是 |
+| `sql_list_constraints` | 列出 PRIMARY KEY / UNIQUE / CHECK 约束（PG：public schema；MySQL：当前库） | 是 |
+
+**不在范围（v0.6）**：写操作、执行 DDL、跨库查询。
 
 ## 2. 技术背景（契约要点，同 dsh-tool-github 已验证）
 
@@ -125,6 +134,11 @@
 - [x] Driver 新增 `listExtensions`（PG：pg_extension；MySQL：空 + 提示）
 - [x] GitHub Actions CI：node 22 上 typecheck + test + build
 - [x] README 双语更新（工具表 + 徽章）+ 推送
+
+### 阶段 9：v0.6 扩展（数据库对象发现）
+- [x] Driver 新增 `listSchemas`/`listSequences`/`listConstraints` + PG/MySQL 实现
+- [x] 注册 3 个新工具：`sql_list_schemas`/`sql_list_sequences`/`sql_list_constraints` + UI 呈现
+- [x] 验收：mock 单测；typecheck；build；README 双语更新 + 推送
 
 ## 4. 开发日志
 
@@ -197,6 +211,17 @@
 - 新增 `.github/workflows/ci.yml`：ubuntu + node 22，`npm ci` + typecheck + test + build；README 中英加 CI 徽章。
 - 测试增至 76/76（client 30 + tools 46）；typecheck / build 全绿。
 
+### 2026-08-25（阶段 9 规划）
+- 规划 v0.6：数据库对象发现三件套（schemas/sequences/constraints），全部保持只读安全模型。
+- `sql_list_schemas` 在 MySQL 用 `SHOW SCHEMAS` 返回当前用户可见的数据库/schema。
+
+### 2026-08-25（阶段 9 实现）
+- Driver 接口新增 `listSchemas`/`listSequences`/`listConstraints`，PG/MySQL 双驱动实现。
+  - PG schemas：`pg_namespace` 排除 `pg_%` 与 `information_schema`；sequences：`information_schema.sequences`（type/start/increment）；constraints：`pg_constraint` 聚合列并带 `pg_get_constraintdef`。
+  - MySQL schemas：`SHOW SCHEMAS`；sequences：无序列对象返回空；constraints：`table_constraints` + `key_column_usage` + `check_constraints`，按约束聚合成列数组。
+- 注册 3 个新工具：`sql_list_schemas`/`sql_list_sequences`/`sql_list_constraints`（共 20 工具）。
+- 测试增至 85/85（client 32 + tools 53）；typecheck / build 全绿。
+
 ## 5. 风险与决策记录
 
 | 时间 | 决策/风险 | 说明 |
@@ -211,4 +236,7 @@
 | 2026-08-14 | schema_dump 体量可控 | 表 DDL 简化生成 + 视图定义，不含触发器/函数定义（用专门工具查） |
 | 2026-08-14 | query limit 钳制 1-1000 | 与 maxRows 取较小值，避免模型请求超大结果集 |
 | 2026-08-14 | MySQL 无扩展概念 | `sql_list_extensions` 在 MySQL 返回空列表 + unsupported 说明 |
+| 2026-08-25 | MySQL 的 schema 即 database | `sql_list_schemas` 在 MySQL 返回 `SHOW SCHEMAS` 可见库，工具描述明确区分两种语义 |
+| 2026-08-25 | MySQL 无序列对象 | `sql_list_sequences` 使用与 extensions 相同的 `{ supported: false }` 模式，避免误导 |
+| 2026-08-25 | 约束发现范围 | 只覆盖 PRIMARY KEY/UNIQUE/CHECK；外键已有专工具，避免输出重复噪点 |
 | 2026-08-14 | 风险：npm 发布受 2FA 限制 | 同 dsh-tool-github，先 GitHub 安装方式 |
