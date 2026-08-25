@@ -70,6 +70,12 @@ npm install /path/to/dsh-tool-sql
 | `sql_list_schemas` | 列出可见 schema（PostgreSQL）或数据库/schema（MySQL） |
 | `sql_list_sequences` | 列出序列（PostgreSQL）；MySQL 提示不支持 |
 | `sql_list_constraints` | 列出主键、唯一、检查约束 |
+| `sql_list_databases` | 列出连接可见的数据库/schema（PostgreSQL 排除模板库） |
+| `sql_list_roles` | 列出 PostgreSQL 角色或 MySQL 账号及关键属性 |
+| `sql_list_grants` | 列出可见权限（PostgreSQL：public schema 表授权；MySQL：用户权限） |
+| `sql_list_materialized_views` | 列出物化视图（PostgreSQL）；MySQL 提示不支持 |
+| `sql_list_partitions` | 列出表分区、方式、边界和估算行数 |
+| `sql_get_table_row_count` | 对安全校验后的表名执行精确 `COUNT(*)` 行数统计 |
 | `sql_table_size` | 表占用空间（数据/索引/合计字节） |
 | `sql_get_schema` | 查看建表 DDL（MySQL：服务器原样；PostgreSQL：catalog 生成简化版） |
 | `sql_preview` | 预览表前 N 行数据（表名严格校验，LIMIT 1-100，默认 10） |

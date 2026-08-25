@@ -45,6 +45,12 @@ function mockDriver(overrides: Partial<Driver> = {}): Driver {
       { name: 'users_pkey', table: 'users', type: 'PRIMARY KEY', columns: ['id'], definition: 'PRIMARY KEY (id)' },
       { name: 'users_age_check', table: 'users', type: 'CHECK', columns: [], definition: 'CHECK ((age >= 0))' },
     ]),
+    listDatabases: vi.fn(async () => [{ name: 'app' }, { name: 'audit' }]),
+    listRoles: vi.fn(async () => [{ name: 'readonly', roleType: 'role', attributes: ['can login'], detail: 'no connection limit' }]),
+    listGrants: vi.fn(async () => [{ grantee: 'app_user', object: 'public.users', privilege: 'SELECT', grantable: false }]),
+    listMaterializedViews: vi.fn(async () => [{ name: 'daily_sales', definition: 'SELECT * FROM sales WHERE day = CURRENT_DATE' }]),
+    listPartitions: vi.fn(async () => [{ parent: 'orders', partition: 'orders_2026', method: 'RANGE', bound: 'FOR VALUES FROM (\'2026-01-01\') TO (\'2027-01-01\')', estimatedRows: 100 }]),
+    getTableRowCount: vi.fn(async () => ({ table: 'users', rowCount: 42 })),
     close: vi.fn(async () => {}),
     ...overrides,
   }
@@ -59,11 +65,17 @@ describe('tool definitions', () => {
       'sql_describe_table',
       'sql_explain',
       'sql_get_schema',
+      'sql_get_table_row_count',
       'sql_list_constraints',
+      'sql_list_databases',
       'sql_list_extensions',
       'sql_list_foreign_keys',
       'sql_list_functions',
+      'sql_list_grants',
       'sql_list_indexes',
+      'sql_list_materialized_views',
+      'sql_list_partitions',
+      'sql_list_roles',
       'sql_list_schemas',
       'sql_list_sequences',
       'sql_list_tables',
@@ -150,6 +162,8 @@ describe('tool definitions', () => {
     await expect(schema.execute({} as never, exec())).rejects.toThrow()
     const preview = tools()['sql_preview']
     await expect(preview.execute({} as never, exec())).rejects.toThrow()
+    const rowCount = tools()['sql_get_table_row_count']
+    await expect(rowCount.execute({} as never, exec())).rejects.toThrow()
   })
 
   it('sql_explain prefixes EXPLAIN when missing and passes read-only check', async () => {
@@ -398,6 +412,85 @@ describe('tool definitions', () => {
     const result = await tool.execute({}, exec())
     expect(result).toEqual({ supported: false, extensions: [] })
   })
+
+  it('sql_list_databases returns and renders visible databases', async () => {
+    const tool = tools()['sql_list_databases']
+    const result = await tool.execute({}, exec())
+    expect(result).toEqual({ databases: [{ name: 'app' }, { name: 'audit' }] })
+    const blocks = (tool.output as { render: (a: unknown, v: any) => unknown }).render({}, { databases: [{ name: 'app' }] })
+    expect(JSON.stringify(blocks)).toContain('app')
+  })
+
+  it('sql_list_roles returns and renders roles', async () => {
+    const tool = tools()['sql_list_roles']
+    const result = await tool.execute({}, exec())
+    expect(result).toEqual({
+      roles: [{ name: 'readonly', roleType: 'role', attributes: ['can login'], detail: 'no connection limit' }],
+    })
+    const blocks = (tool.output as { render: (a: unknown, v: any) => unknown }).render({}, {
+      roles: [{ name: 'readonly', roleType: 'role', attributes: ['can login'], detail: 'no connection limit' }],
+    })
+    expect(JSON.stringify(blocks)).toContain('readonly')
+    expect(JSON.stringify(blocks)).toContain('can login')
+  })
+
+  it('sql_list_grants returns and renders grants', async () => {
+    const tool = tools()['sql_list_grants']
+    const result = await tool.execute({}, exec())
+    expect(result).toEqual({
+      grants: [{ grantee: 'app_user', object: 'public.users', privilege: 'SELECT', grantable: false }],
+    })
+    const blocks = (tool.output as { render: (a: unknown, v: any) => unknown }).render({}, {
+      grants: [{ grantee: 'app_user', object: 'public.users', privilege: 'SELECT', grantable: true }],
+    })
+    expect(JSON.stringify(blocks)).toContain('app_user')
+    expect(JSON.stringify(blocks)).toContain('YES')
+  })
+
+  it('sql_list_materialized_views returns supported:true on postgres', async () => {
+    const tool = tools()['sql_list_materialized_views']
+    const result = await tool.execute({}, exec())
+    expect(result).toEqual({
+      supported: true,
+      materializedViews: [{ name: 'daily_sales', definition: 'SELECT * FROM sales WHERE day = CURRENT_DATE' }],
+    })
+    const blocks = (tool.output as { render: (a: unknown, v: any) => unknown }).render({}, {
+      supported: true,
+      materializedViews: [{ name: 'daily_sales', definition: 'SELECT * FROM sales' }],
+    })
+    expect(JSON.stringify(blocks)).toContain('daily_sales')
+  })
+
+  it('sql_list_materialized_views reports not supported on mysql', async () => {
+    const client = new DbClient({
+      type: 'mysql', host: 'localhost', user: 'u', password: 'p', database: 'db',
+    }, mockDriver())
+    const tool = createTools(client).find(t => t.name === 'sql_list_materialized_views')!
+    const result = await tool.execute({}, exec())
+    expect(result).toEqual({ supported: false, materializedViews: [] })
+  })
+
+  it('sql_list_partitions returns and renders partitions', async () => {
+    const tool = tools()['sql_list_partitions']
+    const result = await tool.execute({}, exec())
+    expect(result).toEqual({
+      partitions: [{ parent: 'orders', partition: 'orders_2026', method: 'RANGE', bound: 'FOR VALUES FROM (\'2026-01-01\') TO (\'2027-01-01\')', estimatedRows: 100 }],
+    })
+    const blocks = (tool.output as { render: (a: unknown, v: any) => unknown }).render({}, {
+      partitions: [{ parent: 'orders', partition: 'orders_2026', method: 'RANGE', bound: 'FOR VALUES FROM ...', estimatedRows: 100 }],
+    })
+    expect(JSON.stringify(blocks)).toContain('orders')
+  })
+
+  it('sql_get_table_row_count returns and renders an exact count', async () => {
+    const tool = tools()['sql_get_table_row_count']
+    const result = await tool.execute({ table: 'users' }, exec())
+    expect(result).toEqual({ table: 'users', rowCount: 42 })
+    const blocks = (tool.output as { render: (a: unknown, v: any) => unknown }).render({ table: 'users' }, {
+      table: 'users', rowCount: 42,
+    })
+    expect(JSON.stringify(blocks)).toContain('42')
+  })
 })
 
 describe('tool presentation (pure render intents)', () => {
@@ -491,6 +584,44 @@ describe('tool presentation (pure render intents)', () => {
     const t = defs()['sql_list_constraints'] as any
     expect(t.presentCall({})).toMatchObject({ card: 'generic', kind: 'read', title: 'List constraints' })
     expect(t.presentResult({}, { constraints: [{}, {}] })).toMatchObject({ title: '2 constraint(s)' })
+  })
+
+  it('sql_list_databases pending and result cards', () => {
+    const t = defs()['sql_list_databases'] as any
+    expect(t.presentCall({})).toMatchObject({ card: 'generic', kind: 'search', title: 'List databases' })
+    expect(t.presentResult({}, { databases: [{}, {}] })).toMatchObject({ title: '2 database(s)' })
+  })
+
+  it('sql_list_roles pending and result cards', () => {
+    const t = defs()['sql_list_roles'] as any
+    expect(t.presentCall({})).toMatchObject({ card: 'generic', kind: 'search', title: 'List roles' })
+    expect(t.presentResult({}, { roles: [{}] })).toMatchObject({ title: '1 role(s)' })
+  })
+
+  it('sql_list_grants pending and result cards', () => {
+    const t = defs()['sql_list_grants'] as any
+    expect(t.presentCall({})).toMatchObject({ card: 'generic', kind: 'search', title: 'List grants' })
+    expect(t.presentResult({}, { grants: [{}, {}] })).toMatchObject({ title: '2 grant(s)' })
+  })
+
+  it('sql_list_materialized_views pending and result cards', () => {
+    const t = defs()['sql_list_materialized_views'] as any
+    expect(t.presentCall({})).toMatchObject({ card: 'generic', kind: 'read', title: 'List materialized views' })
+    expect(t.presentResult({}, { supported: true, materializedViews: [{}] })).toMatchObject({ title: '1 materialized view(s)' })
+    expect(t.presentResult({}, { supported: false, materializedViews: [] })).toMatchObject({ title: 'Not supported' })
+  })
+
+  it('sql_list_partitions pending and result cards', () => {
+    const t = defs()['sql_list_partitions'] as any
+    expect(t.presentCall({})).toMatchObject({ card: 'generic', kind: 'read', title: 'List partitions' })
+    expect(t.presentResult({}, { partitions: [{}, {}] })).toMatchObject({ title: '2 partition(s)' })
+  })
+
+  it('sql_get_table_row_count pending and result cards', () => {
+    const t = defs()['sql_get_table_row_count'] as any
+    const args = { table: 'users' }
+    expect(t.presentCall(args)).toMatchObject({ card: 'generic', kind: 'read', title: 'Row count: users' })
+    expect(t.presentResult(args, { table: 'users', rowCount: 42 })).toMatchObject({ title: 'users: 42 row(s)' })
   })
 
   it('sql_table_size pending and result cards', () => {

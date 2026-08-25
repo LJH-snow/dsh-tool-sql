@@ -77,6 +77,12 @@ function mockDriver(overrides: Partial<Driver> = {}): Driver {
       { name: 'users_pkey', table: 'users', type: 'PRIMARY KEY', columns: ['id'], definition: 'PRIMARY KEY (id)' },
       { name: 'users_age_check', table: 'users', type: 'CHECK', columns: [], definition: 'CHECK ((age >= 0))' },
     ]),
+    listDatabases: vi.fn(async () => [{ name: 'app' }, { name: 'audit' }]),
+    listRoles: vi.fn(async () => [{ name: 'readonly', roleType: 'role', attributes: ['can login'], detail: 'no connection limit' }]),
+    listGrants: vi.fn(async () => [{ grantee: 'app_user', object: 'public.users', privilege: 'SELECT', grantable: false }]),
+    listMaterializedViews: vi.fn(async () => [{ name: 'daily_sales', definition: 'SELECT * FROM sales WHERE day = CURRENT_DATE' }]),
+    listPartitions: vi.fn(async () => [{ parent: 'orders', partition: 'orders_2026', method: 'RANGE', bound: 'FOR VALUES FROM (\'2026-01-01\') TO (\'2027-01-01\')', estimatedRows: 100 }]),
+    getTableRowCount: vi.fn(async () => ({ table: 'users', rowCount: 42 })),
     close: vi.fn(async () => {}),
     ...overrides,
   }
@@ -293,5 +299,42 @@ describe('DbClient v0.2 methods', () => {
     const driver = mockDriver({ listConstraints: vi.fn(async () => { throw new Error('catalog unavailable') }) })
     const client = makeClient(driver)
     await expect(client.listConstraints()).rejects.toMatchObject({ kind: 'query', message: 'catalog unavailable' })
+  })
+
+  it('v0.7 discovery methods return database/role/grant/object info', async () => {
+    const client = makeClient(mockDriver())
+    expect(await client.listDatabases()).toEqual([{ name: 'app' }, { name: 'audit' }])
+    expect(await client.listRoles()).toEqual([
+      { name: 'readonly', roleType: 'role', attributes: ['can login'], detail: 'no connection limit' },
+    ])
+    expect(await client.listGrants()).toEqual([
+      { grantee: 'app_user', object: 'public.users', privilege: 'SELECT', grantable: false },
+    ])
+    expect(await client.listMaterializedViews()).toEqual([
+      { name: 'daily_sales', definition: 'SELECT * FROM sales WHERE day = CURRENT_DATE' },
+    ])
+    expect(await client.listPartitions()).toEqual([
+      { parent: 'orders', partition: 'orders_2026', method: 'RANGE', bound: 'FOR VALUES FROM (\'2026-01-01\') TO (\'2027-01-01\')', estimatedRows: 100 },
+    ])
+  })
+
+  it('getTableRowCount validates the table name before touching the driver', async () => {
+    const driver = mockDriver()
+    const client = makeClient(driver)
+    await expect(client.getTableRowCount('users; DROP TABLE x')).rejects.toMatchObject({ kind: 'denied' })
+    expect(driver.getTableRowCount).not.toHaveBeenCalled()
+  })
+
+  it('getTableRowCount returns an exact count through the driver', async () => {
+    const driver = mockDriver()
+    const client = makeClient(driver)
+    expect(await client.getTableRowCount('users')).toEqual({ table: 'users', rowCount: 42 })
+    expect(driver.getTableRowCount).toHaveBeenCalledWith('users', expect.anything())
+  })
+
+  it('maps driver errors from v0.7 methods to SqlError', async () => {
+    const driver = mockDriver({ listDatabases: vi.fn(async () => { throw new Error('catalog unavailable') }) })
+    const client = makeClient(driver)
+    await expect(client.listDatabases()).rejects.toMatchObject({ kind: 'query', message: 'catalog unavailable' })
   })
 })

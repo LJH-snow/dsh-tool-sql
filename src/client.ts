@@ -131,6 +131,42 @@ export interface ConstraintInfo {
   definition: string | null
 }
 
+export interface DatabaseItem {
+  name: string
+}
+
+export interface RoleInfo {
+  name: string
+  roleType: 'role' | 'account'
+  attributes: string[]
+  detail: string | null
+}
+
+export interface GrantInfo {
+  grantee: string
+  object: string
+  privilege: string
+  grantable: boolean
+}
+
+export interface MaterializedViewInfo {
+  name: string
+  definition: string | null
+}
+
+export interface PartitionInfo {
+  parent: string | null
+  partition: string
+  method: string | null
+  bound: string | null
+  estimatedRows: number | null
+}
+
+export interface TableRowCount {
+  table: string
+  rowCount: number
+}
+
 /** SQL driver adapter; implementations live in drivers/* and are dynamically imported. */
 export interface Driver {
   query(sql: string, signal?: AbortSignal): Promise<{ columns: string[]; rows: Array<Record<string, unknown>> }>
@@ -152,6 +188,12 @@ export interface Driver {
   listSchemas(signal?: AbortSignal): Promise<string[]>
   listSequences(signal?: AbortSignal): Promise<SequenceInfo[]>
   listConstraints(signal?: AbortSignal): Promise<ConstraintInfo[]>
+  listDatabases(signal?: AbortSignal): Promise<DatabaseItem[]>
+  listRoles(signal?: AbortSignal): Promise<RoleInfo[]>
+  listGrants(signal?: AbortSignal): Promise<GrantInfo[]>
+  listMaterializedViews(signal?: AbortSignal): Promise<MaterializedViewInfo[]>
+  listPartitions(signal?: AbortSignal): Promise<PartitionInfo[]>
+  getTableRowCount(table: string, signal?: AbortSignal): Promise<TableRowCount>
   close(): Promise<void>
 }
 
@@ -319,6 +361,67 @@ export class DbClient {
     const driver = await this.getDriver()
     try {
       return await driver.listSchemas(this.combinedSignal(signal))
+    } catch (error) {
+      if (error instanceof SqlError) throw error
+      throw new SqlError(error instanceof Error ? error.message : String(error), 'query')
+    }
+  }
+
+  async listDatabases(signal?: AbortSignal): Promise<DatabaseItem[]> {
+    const driver = await this.getDriver()
+    try {
+      return await driver.listDatabases(this.combinedSignal(signal))
+    } catch (error) {
+      if (error instanceof SqlError) throw error
+      throw new SqlError(error instanceof Error ? error.message : String(error), 'query')
+    }
+  }
+
+  async listRoles(signal?: AbortSignal): Promise<RoleInfo[]> {
+    const driver = await this.getDriver()
+    try {
+      return await driver.listRoles(this.combinedSignal(signal))
+    } catch (error) {
+      if (error instanceof SqlError) throw error
+      throw new SqlError(error instanceof Error ? error.message : String(error), 'query')
+    }
+  }
+
+  async listGrants(signal?: AbortSignal): Promise<GrantInfo[]> {
+    const driver = await this.getDriver()
+    try {
+      return await driver.listGrants(this.combinedSignal(signal))
+    } catch (error) {
+      if (error instanceof SqlError) throw error
+      throw new SqlError(error instanceof Error ? error.message : String(error), 'query')
+    }
+  }
+
+  async listMaterializedViews(signal?: AbortSignal): Promise<MaterializedViewInfo[]> {
+    const driver = await this.getDriver()
+    try {
+      return await driver.listMaterializedViews(this.combinedSignal(signal))
+    } catch (error) {
+      if (error instanceof SqlError) throw error
+      throw new SqlError(error instanceof Error ? error.message : String(error), 'query')
+    }
+  }
+
+  async listPartitions(signal?: AbortSignal): Promise<PartitionInfo[]> {
+    const driver = await this.getDriver()
+    try {
+      return await driver.listPartitions(this.combinedSignal(signal))
+    } catch (error) {
+      if (error instanceof SqlError) throw error
+      throw new SqlError(error instanceof Error ? error.message : String(error), 'query')
+    }
+  }
+
+  async getTableRowCount(table: string, signal?: AbortSignal): Promise<TableRowCount> {
+    assertSafeIdentifier(table, 'table name')
+    const driver = await this.getDriver()
+    try {
+      return await driver.getTableRowCount(table, this.combinedSignal(signal))
     } catch (error) {
       if (error instanceof SqlError) throw error
       throw new SqlError(error instanceof Error ? error.message : String(error), 'query')

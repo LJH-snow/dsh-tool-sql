@@ -1,4 +1,4 @@
-import type { Driver, DbConfig, ColumnInfo, IndexInfo, DatabaseInfo, TableStat, ColumnMatch, ViewInfo, TableSize, SchemaInfo, FunctionInfo, TriggerInfo, ForeignKeyInfo, SchemaDump, ExtensionInfo, SequenceInfo, ConstraintInfo } from '../client.js'
+import type { Driver, DbConfig, ColumnInfo, IndexInfo, DatabaseInfo, TableStat, ColumnMatch, ViewInfo, TableSize, SchemaInfo, FunctionInfo, TriggerInfo, ForeignKeyInfo, SchemaDump, ExtensionInfo, SequenceInfo, ConstraintInfo, DatabaseItem, RoleInfo, GrantInfo, MaterializedViewInfo, PartitionInfo, TableRowCount } from '../client.js'
 import { SqlError, assertSafeIdentifier } from '../client.js'
 
 export async function createPostgresDriver(config: DbConfig): Promise<Driver> {
@@ -212,6 +212,107 @@ export async function createPostgresDriver(config: DbConfig): Promise<Driver> {
          ORDER BY nspname`,
       )
       return result.rows.map(r => r.schema_name)
+    },
+    async listDatabases() {
+      const result = await client.query<{ name: string }>(
+        `SELECT datname AS name
+         FROM pg_database
+         WHERE datistemplate = false
+         ORDER BY datname`,
+      )
+      return result.rows.map<DatabaseItem>(r => ({ name: r.name }))
+    },
+    async listRoles() {
+      const result = await client.query<{
+        name: string
+        superuser: boolean
+        can_login: boolean
+        can_create_db: boolean
+        can_create_role: boolean
+        connection_limit: number | null
+      }>(
+        `SELECT rolname AS name, rolsuper AS superuser, rolcanlogin AS can_login,
+                rolcreatedb AS can_create_db, rolcreaterole AS can_create_role,
+                rolconnlimit AS connection_limit
+         FROM pg_roles
+         ORDER BY rolname`,
+      )
+      return result.rows.map<RoleInfo>(r => {
+        const attributes: string[] = []
+        if (r.superuser) attributes.push('superuser')
+        if (r.can_create_db) attributes.push('create database')
+        if (r.can_create_role) attributes.push('create role')
+        if (r.can_login) attributes.push('can login')
+        return {
+          name: r.name,
+          roleType: 'role',
+          attributes,
+          detail: r.connection_limit === -1 ? 'no connection limit' : `connection limit: ${r.connection_limit ?? 0}`,
+        }
+      })
+    },
+    async listGrants() {
+      const result = await client.query<{
+        grantee: string
+        object: string
+        privilege: string
+        grantable: string
+      }>(
+        `SELECT grantee, table_schema || '.' || table_name AS object,
+                privilege_type AS privilege, is_grantable AS grantable
+         FROM information_schema.role_table_grants
+         WHERE table_schema = 'public'
+         ORDER BY grantee, object, privilege`,
+      )
+      return result.rows.map<GrantInfo>(r => ({
+        grantee: r.grantee,
+        object: r.object,
+        privilege: r.privilege,
+        grantable: r.grantable === 'YES',
+      }))
+    },
+    async listMaterializedViews() {
+      const result = await client.query<{ name: string; definition: string | null }>(
+        `SELECT matviewname AS name, definition
+         FROM pg_matviews
+         WHERE schemaname = 'public'
+         ORDER BY matviewname`,
+      )
+      return result.rows.map<MaterializedViewInfo>(r => ({ name: r.name, definition: r.definition }))
+    },
+    async listPartitions() {
+      const result = await client.query<{
+        parent: string
+        partition: string
+        method: string
+        bound: string | null
+        estimated_rows: string
+      }>(
+        `SELECT parent.relname AS parent, child.relname AS partition,
+                CASE pt.partstrat WHEN 'h' THEN 'HASH' WHEN 'r' THEN 'RANGE' WHEN 'l' THEN 'LIST' END AS method,
+                pg_get_expr(child.relpartbound, child.oid) AS bound,
+                child.reltuples::bigint AS estimated_rows
+         FROM pg_inherits inh
+         JOIN pg_class parent ON parent.oid = inh.inhparent
+         JOIN pg_class child ON child.oid = inh.inhrelid
+         JOIN pg_namespace n ON n.oid = child.relnamespace
+         JOIN pg_partitioned_table pt ON pt.partrelid = parent.oid
+         WHERE n.nspname = 'public'
+         ORDER BY parent.relname, child.relname`,
+      )
+      return result.rows.map<PartitionInfo>(r => ({
+        parent: r.parent,
+        partition: r.partition,
+        method: r.method,
+        bound: r.bound,
+        estimatedRows: Number(r.estimated_rows ?? 0),
+      }))
+    },
+    async getTableRowCount(table) {
+      assertSafeIdentifier(table, 'table name')
+      const result = await client.query<{ row_count: string }>(`SELECT COUNT(*) AS row_count FROM "${table}"`)
+      const row = result.rows[0]
+      return { table, rowCount: Number(row?.row_count ?? 0) } as TableRowCount
     },
     async listSequences() {
       const result = await client.query<{ name: string; data_type: string; start_value: string; increment: string }>(

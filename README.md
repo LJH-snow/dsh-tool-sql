@@ -70,6 +70,12 @@ Full example: [examples/cordis.yml](examples/cordis.yml).
 | `sql_list_schemas` | List visible schemas (PostgreSQL) or databases/schemas (MySQL) |
 | `sql_list_sequences` | List sequences (PostgreSQL); MySQL reports not supported |
 | `sql_list_constraints` | List primary key, unique, and check constraints |
+| `sql_list_databases` | List databases/schemas visible to the connection (PostgreSQL excludes templates) |
+| `sql_list_roles` | List PostgreSQL roles or MySQL accounts with key attributes |
+| `sql_list_grants` | List visible privileges (PostgreSQL: public schema table grants; MySQL: user privileges) |
+| `sql_list_materialized_views` | List materialized views (PostgreSQL); MySQL reports not supported |
+| `sql_list_partitions` | List table partitions, methods, bounds, and estimated rows |
+| `sql_get_table_row_count` | Exact `COUNT(*)` row count for a safely validated table name |
 | `sql_table_size` | Table disk usage (data, index, total bytes) |
 | `sql_get_schema` | `CREATE TABLE` DDL (MySQL: server DDL; PostgreSQL: simplified from catalog) |
 | `sql_preview` | Preview the first rows of a table (validated table name, LIMIT 1-100, default 10) |

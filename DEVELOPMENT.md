@@ -12,7 +12,7 @@
 | 架构 | 一切皆插件：`ctx.tools.register(defineTool(...))` 注册模型可见工具 |
 | 官方参考 | 与 `dsh-tool-github` 同模式（已验证的 defineTool 契约） |
 | 项目位置 | `deepseek-harness-pro/dsh-tool-sql/`（与 dsh-tool-github 平级） |
-| 状态 | v0.6 完成：20 工具 + 85 测试全绿，已推送 GitHub |
+| 状态 | v0.7 完成：26 工具 + 102 测试全绿，已推送 GitHub |
 
 ### 1.1 目标
 - 让 dsh Agent 能对 PostgreSQL / MySQL 执行**只读**查询：查数据、列表、看表结构。
@@ -77,6 +77,18 @@
 
 **不在范围（v0.6）**：写操作、执行 DDL、跨库查询。
 
+### 1.8 范围（v0.7，阶段 10）
+| 工具 | 功能 | 需凭据 |
+|---|---|---|
+| `sql_list_databases` | 列出连接可见的数据库/schema（PG：pg_database 排除模板；MySQL：information_schema.schemata） | 是 |
+| `sql_list_roles` | 列出角色/账号及关键属性（PG：pg_roles；MySQL：mysql.user，失败退化 USER_PRIVILEGES） | 是 |
+| `sql_list_grants` | 列出可见授权（PG：public schema 表授权；MySQL：用户级 USER_PRIVILEGES） | 是 |
+| `sql_list_materialized_views` | 列出物化视图及定义（PG：pg_matviews；MySQL：不支持返回空并说明） | 是 |
+| `sql_list_partitions` | 列出分区/方式/边界/估算行数（PG：pg_inherits；MySQL：information_schema.PARTITIONS） | 是 |
+| `sql_get_table_row_count` | 表名安全校验后执行精确 `COUNT(*)`（大表可能较慢） | 是 |
+
+**不在范围（v0.7）**：写操作、执行 DDL、跨库查询。
+
 ## 2. 技术背景（契约要点，同 dsh-tool-github 已验证）
 
 - `defineTool` 契约：参数自动校验、输出规范 JSON 值、`exec.signal` 透传、`presentCall`/`presentResult` 纯函数。
@@ -138,6 +150,11 @@
 ### 阶段 9：v0.6 扩展（数据库对象发现）
 - [x] Driver 新增 `listSchemas`/`listSequences`/`listConstraints` + PG/MySQL 实现
 - [x] 注册 3 个新工具：`sql_list_schemas`/`sql_list_sequences`/`sql_list_constraints` + UI 呈现
+- [x] 验收：mock 单测；typecheck；build；README 双语更新 + 推送
+
+### 阶段 10：v0.7 扩展（实例级授权与分区发现）
+- [x] Driver 新增 `listDatabases`/`listRoles`/`listGrants`/`listMaterializedViews`/`listPartitions`/`getTableRowCount` + PG/MySQL 实现
+- [x] 注册 6 个新工具：`sql_list_databases`/`sql_list_roles`/`sql_list_grants`/`sql_list_materialized_views`/`sql_list_partitions`/`sql_get_table_row_count` + UI 呈现
 - [x] 验收：mock 单测；typecheck；build；README 双语更新 + 推送
 
 ## 4. 开发日志
@@ -217,10 +234,21 @@
 
 ### 2026-08-25（阶段 9 实现）
 - Driver 接口新增 `listSchemas`/`listSequences`/`listConstraints`，PG/MySQL 双驱动实现。
-  - PG schemas：`pg_namespace` 排除 `pg_%` 与 `information_schema`；sequences：`information_schema.sequences`（type/start/increment）；constraints：`pg_constraint` 聚合列并带 `pg_get_constraintdef`。
-  - MySQL schemas：`SHOW SCHEMAS`；sequences：无序列对象返回空；constraints：`table_constraints` + `key_column_usage` + `check_constraints`，按约束聚合成列数组。
+- PG schemas：`pg_namespace` 排除 `pg_%` 与 `information_schema`；sequences：`information_schema.sequences`（type/start/increment）；constraints：`pg_constraint` 聚合列并带 `pg_get_constraintdef`。
+- MySQL schemas：`SHOW SCHEMAS`；sequences：无序列对象返回空；constraints：`table_constraints` + `key_column_usage` + `check_constraints`，按约束聚合成列数组。
 - 注册 3 个新工具：`sql_list_schemas`/`sql_list_sequences`/`sql_list_constraints`（共 20 工具）。
 - 测试增至 85/85（client 32 + tools 53）；typecheck / build 全绿。
+
+### 2026-08-25（阶段 10 规划）
+- 规划 v0.7：新增数据库/角色/授权/物化视图/分区/精确行数发现工具，全部保持只读安全模型。
+- `sql_get_table_row_count` 使用精确 `COUNT(*)`，文档明确提示大表可能耗时。
+
+### 2026-08-25（阶段 10 实现）
+- Driver 接口新增 `listDatabases`/`listRoles`/`listGrants`/`listMaterializedViews`/`listPartitions`/`getTableRowCount`，PG/MySQL 双驱动实现。
+  - PG databases：`pg_database` 排除模板库；roles：`pg_roles` 聚合关键属性；grants：`role_table_grants` 限定 public schema；物化视图：`pg_matviews`；分区：`pg_inherits` + `pg_partitioned_table` + `pg_get_expr`。
+  - MySQL databases：`information_schema.schemata`；accounts：优先读 `mysql.user`，权限不足退化到 `USER_PRIVILEGES`；grants：`USER_PRIVILEGES` 用户级授权；物化视图：不支持返回空；分区：`information_schema.PARTITIONS`；行数：`COUNT(*)` + 反引号安全拼接。
+- 注册 6 个新工具：`sql_list_databases`/`sql_list_roles`/`sql_list_grants`/`sql_list_materialized_views`/`sql_list_partitions`/`sql_get_table_row_count`（共 26 工具）。
+- 测试增至 102/102（client 36 + tools 66）；typecheck / build 全绿。
 
 ## 5. 风险与决策记录
 
@@ -239,4 +267,7 @@
 | 2026-08-25 | MySQL 的 schema 即 database | `sql_list_schemas` 在 MySQL 返回 `SHOW SCHEMAS` 可见库，工具描述明确区分两种语义 |
 | 2026-08-25 | MySQL 无序列对象 | `sql_list_sequences` 使用与 extensions 相同的 `{ supported: false }` 模式，避免误导 |
 | 2026-08-25 | 约束发现范围 | 只覆盖 PRIMARY KEY/UNIQUE/CHECK；外键已有专工具，避免输出重复噪点 |
+| 2026-08-25 | MySQL 无物化视图 | `sql_list_materialized_views` 在 MySQL 返回 `{ supported: false }`，避免误认为有对象 |
+| 2026-08-25 | MySQL mysql.user 可能无权限 | `sql_list_roles` 失败时退化到 `USER_PRIVILEGES`，宁可返回较少属性也不让工具直接报错 |
+| 2026-08-25 | 精确行数可能扫描大表 | `sql_get_table_row_count` 保持精确语义，工具描述明确提示耗时风险 |
 | 2026-08-14 | 风险：npm 发布受 2FA 限制 | 同 dsh-tool-github，先 GitHub 安装方式 |

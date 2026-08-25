@@ -1,4 +1,4 @@
-import type { Driver, DbConfig, ColumnInfo, IndexInfo, DatabaseInfo, TableStat, ColumnMatch, ViewInfo, TableSize, SchemaInfo, FunctionInfo, TriggerInfo, ForeignKeyInfo, SchemaDump, ExtensionInfo, SequenceInfo, ConstraintInfo } from '../client.js'
+import type { Driver, DbConfig, ColumnInfo, IndexInfo, DatabaseInfo, TableStat, ColumnMatch, ViewInfo, TableSize, SchemaInfo, FunctionInfo, TriggerInfo, ForeignKeyInfo, SchemaDump, ExtensionInfo, SequenceInfo, ConstraintInfo, DatabaseItem, RoleInfo, GrantInfo, MaterializedViewInfo, PartitionInfo, TableRowCount } from '../client.js'
 import { assertSafeIdentifier } from '../client.js'
 
 export async function createMysqlDriver(config: DbConfig): Promise<Driver> {
@@ -138,6 +138,91 @@ export async function createMysqlDriver(config: DbConfig): Promise<Driver> {
       const list = rows as Array<Record<string, unknown>>
       const key = Object.keys(list[0] ?? {})[0] ?? 'Schema'
       return list.map(r => String(r[key]))
+    },
+    async listDatabases() {
+      const [rows] = await conn.query(
+        `SELECT SCHEMA_NAME AS name
+         FROM information_schema.schemata
+         ORDER BY SCHEMA_NAME`,
+      )
+      const list = rows as Array<{ name: string }>
+      return list.map<DatabaseItem>(r => ({ name: r.name }))
+    },
+    async listRoles() {
+      try {
+        const [rows] = await conn.query(
+          `SELECT USER AS name, HOST AS host, PLUGIN AS plugin, ACCOUNT_LOCKED AS locked
+           FROM mysql.user
+           ORDER BY USER, HOST`,
+        )
+        const list = rows as Array<{ name: string; host: string; plugin: string | null; locked: string }>
+        return list.map<RoleInfo>(r => {
+          const attributes = [`plugin: ${r.plugin ?? 'unknown'}`]
+          if (r.locked === 'Y') attributes.push('locked')
+          return {
+            name: `${r.name}@${r.host}`,
+            roleType: 'account',
+            attributes,
+            detail: r.locked === 'Y' ? 'account is locked' : 'account is unlocked',
+          }
+        })
+      } catch {
+        const [rows] = await conn.query('SELECT DISTINCT GRANTEE AS name FROM information_schema.USER_PRIVILEGES ORDER BY GRANTEE')
+        const list = rows as Array<{ name: string }>
+        return list.map<RoleInfo>(r => ({
+          name: r.name,
+          roleType: 'account',
+          attributes: ['privilege catalog only'],
+          detail: 'mysql.user is not readable',
+        }))
+      }
+    },
+    async listGrants() {
+      const [rows] = await conn.query(
+        `SELECT GRANTEE AS grantee, PRIVILEGE_TYPE AS privilege, IS_GRANTABLE AS grantable
+         FROM information_schema.USER_PRIVILEGES
+         ORDER BY GRANTEE, PRIVILEGE_TYPE`,
+      )
+      const list = rows as Array<{ grantee: string; privilege: string; grantable: string }>
+      return list.map<GrantInfo>(r => ({
+        grantee: r.grantee,
+        object: '*.*',
+        privilege: r.privilege,
+        grantable: r.grantable === 'YES',
+      }))
+    },
+    async listMaterializedViews() {
+      return [] as MaterializedViewInfo[]
+    },
+    async listPartitions() {
+      const [rows] = await conn.query(
+        `SELECT TABLE_NAME AS parent, PARTITION_NAME AS partition_name,
+                PARTITION_METHOD AS method, PARTITION_EXPRESSION AS bound,
+                TABLE_ROWS AS estimated_rows
+         FROM information_schema.PARTITIONS
+         WHERE TABLE_SCHEMA = DATABASE() AND PARTITION_NAME IS NOT NULL
+         ORDER BY TABLE_NAME, PARTITION_ORDINAL_POSITION`,
+      )
+      const list = rows as Array<{
+        parent: string
+        partition_name: string
+        method: string
+        bound: string | null
+        estimated_rows: number | null
+      }>
+      return list.map<PartitionInfo>(r => ({
+        parent: r.parent,
+        partition: r.partition_name,
+        method: r.method,
+        bound: r.bound,
+        estimatedRows: Number(r.estimated_rows ?? 0),
+      }))
+    },
+    async getTableRowCount(table) {
+      assertSafeIdentifier(table, 'table name')
+      const [rows] = await conn.query(`SELECT COUNT(*) AS row_count FROM \`${table}\``)
+      const list = rows as Array<{ row_count: number | string }>
+      return { table, rowCount: Number(list[0]?.row_count ?? 0) } as TableRowCount
     },
     async listSequences() {
       return [] as SequenceInfo[]

@@ -609,6 +609,272 @@ export function createTools(client: DbClient) {
     }),
 
     defineTool({
+      name: 'sql_list_databases',
+      description:
+        'List databases/schemas visible to the current connection. PostgreSQL excludes template databases; MySQL returns accessible schemas.',
+      parameters: {},
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            databases: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  name: { type: 'string', description: 'Database/schema name' },
+                },
+              },
+              description: 'Databases or schemas visible to the connection',
+            },
+          },
+        },
+        render: (_args, value) => {
+          const databases = value.databases ?? []
+          if (databases.length === 0) return [{ type: 'text', text: '(no visible databases)' }]
+          return [{ type: 'text', text: databases.map(d => d.name).join('\n') }]
+        },
+      },
+      presentCall(): ToolCallView {
+        return { card: 'generic', title: `List databases`, kind: 'search' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { databases?: unknown[] }
+        return { card: 'generic', title: `${v.databases?.length ?? 0} database(s)` }
+      },
+      async execute(_args, exec) {
+        return { databases: await client.listDatabases(exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_list_roles',
+      description:
+        'List roles/accounts and their key attributes. PostgreSQL returns roles from pg_roles; MySQL returns accounts from mysql.user with a USER_PRIVILEGES fallback.',
+      parameters: {},
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            roles: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  name: { type: 'string', description: 'Role name or account@host' },
+                  roleType: { type: 'string', enum: ['role', 'account'], description: 'PostgreSQL role or MySQL account' },
+                  attributes: { type: 'array', items: { type: 'string' }, description: 'Role/account attributes' },
+                  detail: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Additional role detail' },
+                },
+              },
+              description: 'Roles or accounts',
+            },
+          },
+        },
+        render: (_args, value) => {
+          const roles = value.roles ?? []
+          if (roles.length === 0) return [{ type: 'text', text: '(no roles)' }]
+          const lines = ['name\ttype\tattributes\tdetail']
+          lines.push('---\t---\t---\t---')
+          for (const r of roles) {
+            lines.push(`${r.name}\t${r.roleType}\t${(r.attributes ?? []).join(', ')}\t${r.detail ?? ''}`)
+          }
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(): ToolCallView {
+        return { card: 'generic', title: `List roles`, kind: 'search' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { roles?: unknown[] }
+        return { card: 'generic', title: `${v.roles?.length ?? 0} role(s)` }
+      },
+      async execute(_args, exec) {
+        return { roles: await client.listRoles(exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_list_grants',
+      description:
+        'List object privileges visible to the connection. PostgreSQL returns table grants in the public schema; MySQL returns global user privileges.',
+      parameters: {},
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            grants: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  grantee: { type: 'string', description: 'Grantee name' },
+                  object: { type: 'string', description: 'Privileged object, target, or *.*' },
+                  privilege: { type: 'string', description: 'Privilege type' },
+                  grantable: { type: 'boolean', description: 'Whether the grantee can grant the privilege' },
+                },
+              },
+              description: 'Privileges',
+            },
+          },
+        },
+        render: (_args, value) => {
+          const grants = value.grants ?? []
+          if (grants.length === 0) return [{ type: 'text', text: '(no grants)' }]
+          const lines = ['grantee\tobject\tprivilege\tgrantable']
+          lines.push('---\t---\t---\t---')
+          for (const g of grants) {
+            lines.push(`${g.grantee}\t${g.object}\t${g.privilege}\t${g.grantable ? 'YES' : 'NO'}`)
+          }
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(): ToolCallView {
+        return { card: 'generic', title: `List grants`, kind: 'search' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { grants?: unknown[] }
+        return { card: 'generic', title: `${v.grants?.length ?? 0} grant(s)` }
+      },
+      async execute(_args, exec) {
+        return { grants: await client.listGrants(exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_list_materialized_views',
+      description:
+        'List materialized views with definitions. PostgreSQL returns materialized views in the public schema; MySQL reports unsupported.',
+      parameters: {},
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            supported: { type: 'boolean', description: 'Whether the database supports materialized views (PostgreSQL: true, MySQL: false)' },
+            materializedViews: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  name: { type: 'string', description: 'Materialized view name' },
+                  definition: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Materialized view definition SQL' },
+                },
+              },
+              description: 'Materialized views',
+            },
+          },
+        },
+        render: (_args, value) => {
+          if (!value.supported) return [{ type: 'text', text: 'This database (MySQL) does not support materialized views.' }]
+          const views = value.materializedViews ?? []
+          if (views.length === 0) return [{ type: 'text', text: '(no materialized views)' }]
+          return [{ type: 'text', text: views.map(v => v.definition ? `${v.name}: ${v.definition}` : v.name).join('\n') }]
+        },
+      },
+      presentCall(): ToolCallView {
+        return { card: 'generic', title: `List materialized views`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { supported?: boolean; materializedViews?: unknown[] }
+        return { card: 'generic', title: v.supported ? `${v.materializedViews?.length ?? 0} materialized view(s)` : 'Not supported' }
+      },
+      async execute(_args, exec) {
+        if (client.databaseType === 'mysql') {
+          return { supported: false, materializedViews: [] }
+        }
+        return { supported: true, materializedViews: await client.listMaterializedViews(exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_list_partitions',
+      description:
+        'List table partitions and bounds. PostgreSQL returns partition children of public-schema partitioned tables; MySQL returns information_schema.PARTITIONS entries.',
+      parameters: {},
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            partitions: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  parent: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Parent table name' },
+                  partition: { type: 'string', description: 'Partition name' },
+                  method: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Partitioning method' },
+                  bound: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Partition bound or expression' },
+                  estimatedRows: { oneOf: [{ type: 'integer' }, { type: 'null' }], description: 'Estimated row count' },
+                },
+              },
+              description: 'Partitions',
+            },
+          },
+        },
+        render: (_args, value) => {
+          const partitions = value.partitions ?? []
+          if (partitions.length === 0) return [{ type: 'text', text: '(no partitions)' }]
+          const lines = ['parent\tpartition\tmethod\tbound\testimated_rows']
+          lines.push('---\t---\t---\t---\t---')
+          for (const p of partitions) {
+            lines.push(`${p.parent ?? ''}\t${p.partition}\t${p.method ?? ''}\t${p.bound ?? ''}\t${p.estimatedRows ?? 0}`)
+          }
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(): ToolCallView {
+        return { card: 'generic', title: `List partitions`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { partitions?: unknown[] }
+        return { card: 'generic', title: `${v.partitions?.length ?? 0} partition(s)` }
+      },
+      async execute(_args, exec) {
+        return { partitions: await client.listPartitions(exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_get_table_row_count',
+      description:
+        'Return the exact row count for a table with COUNT(*). Table names are strictly validated; counting a very large table can take time.',
+      parameters: {
+        table: { type: 'string', required: true, description: 'Table name (letters, digits, underscores only)' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            table: { type: 'string', description: 'Table name' },
+            rowCount: { type: 'integer', description: 'Exact row count' },
+          },
+        },
+        render: (_args, value) => [{ type: 'text', text: `${value.table}: ${value.rowCount} row(s)` }],
+      },
+      presentCall(args): ToolCallView {
+        return { card: 'generic', title: `Row count: ${args.table}`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { table?: string; rowCount?: number }
+        return { card: 'generic', title: `${v.table ?? ''}: ${v.rowCount ?? 0} row(s)` }
+      },
+      async execute(args, exec) {
+        return await client.getTableRowCount(args.table, exec.signal)
+      },
+    }),
+
+    defineTool({
       name: 'sql_table_size',
       description: 'Show a table\'s disk usage: data size, index size, and total in bytes.',
       parameters: {
