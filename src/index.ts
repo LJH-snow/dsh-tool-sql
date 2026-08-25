@@ -1247,6 +1247,255 @@ export function createTools(client: DbClient) {
         return { supported: true, extensions: await client.listExtensions(exec.signal) }
       },
     }),
+
+    defineTool({
+      name: 'sql_search_tables',
+      description:
+        'Search tables, views, and materialized views by name (case-insensitive, supports % and _ wildcards). Returns up to 100 matches.',
+      parameters: {
+        pattern: { type: 'string', required: true, description: 'Table/view name pattern, e.g. "order" or "%audit_%"' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            matches: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  schema: { type: 'string', description: 'Schema/database name' },
+                  name: { type: 'string', description: 'Table, view, or materialized view name' },
+                  kind: { type: 'string', enum: ['table', 'view', 'materialized view'], description: 'Object kind' },
+                },
+              },
+              description: 'Matching database objects',
+            },
+          },
+        },
+        render: (_args, value) => {
+          const matches = value.matches ?? []
+          if (matches.length === 0) return [{ type: 'text', text: 'No matching tables or views found.' }]
+          const lines = ['schema\tname\tkind']
+          lines.push('---\t---\t---')
+          for (const m of matches) {
+            lines.push(`${m.schema}\t${m.name}\t${m.kind}`)
+          }
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(args): ToolCallView {
+        return { card: 'generic', title: `Search tables: ${args.pattern}`, kind: 'search' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { matches?: unknown[] }
+        return { card: 'generic', title: `${v.matches?.length ?? 0} object(s)` }
+      },
+      async execute(args, exec) {
+        return { matches: await client.searchTables(args.pattern, exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_database_size',
+      description:
+        'Return disk usage for the current database. PostgreSQL reports total database size; MySQL reports data plus index sizes.',
+      parameters: {},
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            database: { type: 'string', description: 'Current database/schema name' },
+            totalBytes: { type: 'integer', description: 'Total database size in bytes' },
+            dataBytes: { oneOf: [{ type: 'integer' }, { type: 'null' }], description: 'Data bytes (MySQL only)' },
+            indexBytes: { oneOf: [{ type: 'integer' }, { type: 'null' }], description: 'Index bytes (MySQL only)' },
+          },
+        },
+        render: (_args, value) => {
+          const lines = [
+            `database: ${value.database ?? ''}`,
+            `data: ${value.dataBytes === null || value.dataBytes === undefined ? 'n/a' : formatBytes(value.dataBytes)}`,
+            `index: ${value.indexBytes === null || value.indexBytes === undefined ? 'n/a' : formatBytes(value.indexBytes)}`,
+            `total: ${formatBytes(value.totalBytes ?? 0)}`,
+          ]
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(): ToolCallView {
+        return { card: 'generic', title: `Database size`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { database?: string; totalBytes?: number }
+        return { card: 'generic', title: `Size: ${v.database ?? ''}`, content: [{ type: 'text', text: formatBytes(v.totalBytes ?? 0) }] }
+      },
+      async execute(_args, exec) {
+        return await client.databaseSize(exec.signal)
+      },
+    }),
+
+    defineTool({
+      name: 'sql_list_table_sizes',
+      description:
+        'List disk usage for every table in the current database, largest first. PostgreSQL covers the public schema; MySQL covers the current database.',
+      parameters: {},
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            sizes: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  schema: { type: 'string', description: 'Schema/database name' },
+                  table: { type: 'string', description: 'Table name' },
+                  dataBytes: { type: 'integer', description: 'Data size in bytes' },
+                  indexBytes: { type: 'integer', description: 'Index size in bytes' },
+                  totalBytes: { type: 'integer', description: 'Total size in bytes' },
+                },
+              },
+              description: 'Per-table sizes',
+            },
+          },
+        },
+        render: (_args, value) => {
+          const sizes = value.sizes ?? []
+          if (sizes.length === 0) return [{ type: 'text', text: '(no tables)' }]
+          const lines = ['schema\ttable\tdata\tindex\ttotal']
+          lines.push('---\t---\t---\t---\t---')
+          for (const s of sizes) {
+            lines.push(`${s.schema}\t${s.table}\t${formatBytes(s.dataBytes ?? 0)}\t${formatBytes(s.indexBytes ?? 0)}\t${formatBytes(s.totalBytes ?? 0)}`)
+          }
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(): ToolCallView {
+        return { card: 'generic', title: `List table sizes`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { sizes?: unknown[] }
+        return { card: 'generic', title: `${v.sizes?.length ?? 0} table(s)` }
+      },
+      async execute(_args, exec) {
+        return { sizes: await client.listTableSizes(exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_get_table_comments',
+      description:
+        'Show the table comment and column comments for a table. PostgreSQL covers the public schema; MySQL covers the current database.',
+      parameters: {
+        table: { type: 'string', required: true, description: 'Table name' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            table: { type: 'string', description: 'Table name' },
+            tableComment: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Table comment' },
+            columns: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  name: { type: 'string', description: 'Column name' },
+                  comment: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Column comment' },
+                },
+              },
+              description: 'Column comments',
+            },
+          },
+        },
+        render: (_args, value) => {
+          const columns = value.columns ?? []
+          const lines = [
+            `table: ${value.table ?? ''}`,
+            `table comment: ${value.tableComment ?? '(none)'}`,
+          ]
+          if (columns.length === 0) {
+            lines.push('(no columns)')
+          } else {
+            lines.push('column\tcomment')
+            lines.push('---\t---')
+            for (const col of columns) {
+              lines.push(`${col.name}\t${col.comment ?? ''}`)
+            }
+          }
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(args): ToolCallView {
+        return { card: 'generic', title: `Comments: ${args.table}`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { table?: string; columns?: unknown[] }
+        return { card: 'generic', title: `Comments: ${v.table ?? ''}`, content: [{ type: 'text', text: `${v.columns?.length ?? 0} column(s)` }] }
+      },
+      async execute(args, exec) {
+        return await client.getTableComments(args.table, exec.signal)
+      },
+    }),
+
+    defineTool({
+      name: 'sql_list_incoming_foreign_keys',
+      description:
+        'List foreign keys from other tables that reference a target table. Use this to see which child rows depend on a parent table.',
+      parameters: {
+        table: { type: 'string', required: true, description: 'Referenced (parent) table name' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            table: { type: 'string', description: 'Referenced table name' },
+            foreignKeys: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  name: { type: 'string', description: 'Constraint name' },
+                  table: { type: 'string', description: 'Child table' },
+                  column: { type: 'string', description: 'Child column' },
+                  referencedTable: { type: 'string', description: 'Referenced table' },
+                  referencedColumn: { type: 'string', description: 'Referenced column' },
+                },
+              },
+              description: 'Incoming foreign keys',
+            },
+          },
+        },
+        render: (_args, value) => {
+          const fks = value.foreignKeys ?? []
+          if (fks.length === 0) return [{ type: 'text', text: `No tables reference "${value.table}".` }]
+          const lines = ['name\tchild\t->\tparent']
+          lines.push('---\t---\t---\t---')
+          for (const fk of fks) {
+            lines.push(`${fk.name}\t${fk.table}.${fk.column}\t->\t${fk.referencedTable}.${fk.referencedColumn}`)
+          }
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(args): ToolCallView {
+        return { card: 'generic', title: `Incoming FKs: ${args.table}`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { table?: string; foreignKeys?: unknown[] }
+        return { card: 'generic', title: `${v.table ?? ''}: ${v.foreignKeys?.length ?? 0} reference(s)` }
+      },
+      async execute(args, exec) {
+        return { table: args.table, foreignKeys: await client.listIncomingForeignKeys(args.table, exec.signal) }
+      },
+    }),
   ]
 }
 
@@ -1279,4 +1528,11 @@ function formatCell(value: unknown): string {
   if (value === null || value === undefined) return 'NULL'
   if (typeof value === 'object') return JSON.stringify(value)
   return String(value)
+}
+
+function formatBytes(value: number): string {
+  if (value >= 1024 ** 3) return `${(value / 1024 ** 3).toFixed(2)} GiB`
+  if (value >= 1024 ** 2) return `${(value / 1024 ** 2).toFixed(2)} MiB`
+  if (value >= 1024) return `${(value / 1024).toFixed(2)} KiB`
+  return `${value} B`
 }

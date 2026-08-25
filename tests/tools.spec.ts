@@ -51,6 +51,20 @@ function mockDriver(overrides: Partial<Driver> = {}): Driver {
     listMaterializedViews: vi.fn(async () => [{ name: 'daily_sales', definition: 'SELECT * FROM sales WHERE day = CURRENT_DATE' }]),
     listPartitions: vi.fn(async () => [{ parent: 'orders', partition: 'orders_2026', method: 'RANGE', bound: 'FOR VALUES FROM (\'2026-01-01\') TO (\'2027-01-01\')', estimatedRows: 100 }]),
     getTableRowCount: vi.fn(async () => ({ table: 'users', rowCount: 42 })),
+    searchTables: vi.fn(async () => [
+      { schema: 'public', name: 'order_items', kind: 'table' },
+      { schema: 'public', name: 'order_summary', kind: 'view' },
+    ]),
+    databaseSize: vi.fn(async () => ({ database: 'db', totalBytes: 4096, dataBytes: 1024, indexBytes: 3072 })),
+    listTableSizes: vi.fn(async () => [{ schema: 'public', table: 'orders', dataBytes: 1024, indexBytes: 512, totalBytes: 1536 }]),
+    getTableComments: vi.fn(async () => ({
+      table: 'users',
+      tableComment: 'accounts',
+      columns: [{ name: 'id', comment: 'primary key' }, { name: 'email', comment: null }],
+    })),
+    listIncomingForeignKeys: vi.fn(async () => [
+      { name: 'orders_user_id_fkey', table: 'orders', column: 'user_id', referencedTable: 'users', referencedColumn: 'id' },
+    ]),
     close: vi.fn(async () => {}),
     ...overrides,
   }
@@ -62,9 +76,11 @@ describe('tool definitions', () => {
   it('registers the planned tools', () => {
     expect(Object.keys(tools()).sort()).toEqual([
       'sql_database_info',
+      'sql_database_size',
       'sql_describe_table',
       'sql_explain',
       'sql_get_schema',
+      'sql_get_table_comments',
       'sql_get_table_row_count',
       'sql_list_constraints',
       'sql_list_databases',
@@ -72,12 +88,14 @@ describe('tool definitions', () => {
       'sql_list_foreign_keys',
       'sql_list_functions',
       'sql_list_grants',
+      'sql_list_incoming_foreign_keys',
       'sql_list_indexes',
       'sql_list_materialized_views',
       'sql_list_partitions',
       'sql_list_roles',
       'sql_list_schemas',
       'sql_list_sequences',
+      'sql_list_table_sizes',
       'sql_list_tables',
       'sql_list_triggers',
       'sql_list_views',
@@ -86,6 +104,7 @@ describe('tool definitions', () => {
       'sql_query',
       'sql_schema_dump',
       'sql_search_columns',
+      'sql_search_tables',
       'sql_table_size',
       'sql_table_stats',
     ])
@@ -164,6 +183,12 @@ describe('tool definitions', () => {
     await expect(preview.execute({} as never, exec())).rejects.toThrow()
     const rowCount = tools()['sql_get_table_row_count']
     await expect(rowCount.execute({} as never, exec())).rejects.toThrow()
+    const tableSearch = tools()['sql_search_tables']
+    await expect(tableSearch.execute({} as never, exec())).rejects.toThrow()
+    const comments = tools()['sql_get_table_comments']
+    await expect(comments.execute({} as never, exec())).rejects.toThrow()
+    const incoming = tools()['sql_list_incoming_foreign_keys']
+    await expect(incoming.execute({} as never, exec())).rejects.toThrow()
   })
 
   it('sql_explain prefixes EXPLAIN when missing and passes read-only check', async () => {
@@ -491,6 +516,83 @@ describe('tool definitions', () => {
     })
     expect(JSON.stringify(blocks)).toContain('42')
   })
+
+  it('sql_search_tables returns matches and renders them', async () => {
+    const tool = tools()['sql_search_tables']
+    const result = await tool.execute({ pattern: 'order' }, exec())
+    expect(result).toEqual({
+      matches: [
+        { schema: 'public', name: 'order_items', kind: 'table' },
+        { schema: 'public', name: 'order_summary', kind: 'view' },
+      ],
+    })
+    const blocks = (tool.output as { render: (a: unknown, v: any) => unknown }).render({ pattern: 'order' }, {
+      matches: [{ schema: 'public', name: 'order_items', kind: 'table' }],
+    })
+    expect(JSON.stringify(blocks)).toContain('order_items')
+    expect(JSON.stringify(blocks)).toContain('table')
+  })
+
+  it('sql_database_size returns and renders size', async () => {
+    const tool = tools()['sql_database_size']
+    const result = await tool.execute({}, exec())
+    expect(result).toEqual({ database: 'db', totalBytes: 4096, dataBytes: 1024, indexBytes: 3072 })
+    const blocks = (tool.output as { render: (a: unknown, v: any) => unknown }).render({}, {
+      database: 'db', totalBytes: 4096, dataBytes: 1024, indexBytes: 3072,
+    })
+    const text = JSON.stringify(blocks)
+    expect(text).toContain('db')
+    expect(text).toContain('KiB')
+  })
+
+  it('sql_list_table_sizes returns and renders table sizes', async () => {
+    const tool = tools()['sql_list_table_sizes']
+    const result = await tool.execute({}, exec())
+    expect(result).toEqual({
+      sizes: [{ schema: 'public', table: 'orders', dataBytes: 1024, indexBytes: 512, totalBytes: 1536 }],
+    })
+    const blocks = (tool.output as { render: (a: unknown, v: any) => unknown }).render({}, {
+      sizes: [{ schema: 'public', table: 'orders', dataBytes: 1024, indexBytes: 512, totalBytes: 1536 }],
+    })
+    expect(JSON.stringify(blocks)).toContain('orders')
+    expect(JSON.stringify(blocks)).toContain('KiB')
+  })
+
+  it('sql_get_table_comments returns and renders comments', async () => {
+    const tool = tools()['sql_get_table_comments']
+    const result = await tool.execute({ table: 'users' }, exec())
+    expect(result).toEqual({
+      table: 'users',
+      tableComment: 'accounts',
+      columns: [{ name: 'id', comment: 'primary key' }, { name: 'email', comment: null }],
+    })
+    const blocks = (tool.output as { render: (a: unknown, v: any) => unknown }).render({ table: 'users' }, {
+      table: 'users',
+      tableComment: 'accounts',
+      columns: [{ name: 'id', comment: 'primary key' }],
+    })
+    const text = JSON.stringify(blocks)
+    expect(text).toContain('accounts')
+    expect(text).toContain('primary key')
+  })
+
+  it('sql_list_incoming_foreign_keys returns and renders references', async () => {
+    const tool = tools()['sql_list_incoming_foreign_keys']
+    const result = await tool.execute({ table: 'users' }, exec())
+    expect(result).toEqual({
+      table: 'users',
+      foreignKeys: [
+        { name: 'orders_user_id_fkey', table: 'orders', column: 'user_id', referencedTable: 'users', referencedColumn: 'id' },
+      ],
+    })
+    const blocks = (tool.output as { render: (a: unknown, v: any) => unknown }).render({ table: 'users' }, {
+      table: 'users',
+      foreignKeys: [{ name: 'orders_user_id_fkey', table: 'orders', column: 'user_id', referencedTable: 'users', referencedColumn: 'id' }],
+    })
+    const text = JSON.stringify(blocks)
+    expect(text).toContain('orders.user_id')
+    expect(text).toContain('users.id')
+  })
 })
 
 describe('tool presentation (pure render intents)', () => {
@@ -675,5 +777,37 @@ describe('tool presentation (pure render intents)', () => {
     expect(t.presentCall({})).toMatchObject({ card: 'generic', kind: 'read', title: 'List extensions' })
     expect(t.presentResult({}, { supported: true, extensions: [{}, {}] })).toMatchObject({ title: '2 extension(s)' })
     expect(t.presentResult({}, { supported: false, extensions: [] })).toMatchObject({ title: 'Not supported' })
+  })
+
+  it('sql_search_tables pending and result cards', () => {
+    const t = defs()['sql_search_tables'] as any
+    expect(t.presentCall({ pattern: 'order' })).toMatchObject({ card: 'generic', kind: 'search', title: 'Search tables: order' })
+    expect(t.presentResult({ pattern: 'order' }, { matches: [{}] })).toMatchObject({ title: '1 object(s)' })
+  })
+
+  it('sql_database_size pending and result cards', () => {
+    const t = defs()['sql_database_size'] as any
+    expect(t.presentCall({})).toMatchObject({ card: 'generic', kind: 'read', title: 'Database size' })
+    expect(t.presentResult({}, { database: 'db', totalBytes: 1024 })).toMatchObject({ title: 'Size: db' })
+  })
+
+  it('sql_list_table_sizes pending and result cards', () => {
+    const t = defs()['sql_list_table_sizes'] as any
+    expect(t.presentCall({})).toMatchObject({ card: 'generic', kind: 'read', title: 'List table sizes' })
+    expect(t.presentResult({}, { sizes: [{}, {}] })).toMatchObject({ title: '2 table(s)' })
+  })
+
+  it('sql_get_table_comments pending and result cards', () => {
+    const t = defs()['sql_get_table_comments'] as any
+    const args = { table: 'users' }
+    expect(t.presentCall(args)).toMatchObject({ card: 'generic', kind: 'read', title: 'Comments: users' })
+    expect(t.presentResult(args, { table: 'users', columns: [{}, {}] })).toMatchObject({ title: 'Comments: users' })
+  })
+
+  it('sql_list_incoming_foreign_keys pending and result cards', () => {
+    const t = defs()['sql_list_incoming_foreign_keys'] as any
+    const args = { table: 'users' }
+    expect(t.presentCall(args)).toMatchObject({ card: 'generic', kind: 'read', title: 'Incoming FKs: users' })
+    expect(t.presentResult(args, { table: 'users', foreignKeys: [{}] })).toMatchObject({ title: 'users: 1 reference(s)' })
   })
 })

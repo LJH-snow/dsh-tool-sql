@@ -12,7 +12,7 @@
 | 架构 | 一切皆插件：`ctx.tools.register(defineTool(...))` 注册模型可见工具 |
 | 官方参考 | 与 `dsh-tool-github` 同模式（已验证的 defineTool 契约） |
 | 项目位置 | `deepseek-harness-pro/dsh-tool-sql/`（与 dsh-tool-github 平级） |
-| 状态 | v0.7 完成：26 工具 + 102 测试全绿，已推送 GitHub |
+| 状态 | v0.8 完成：31 工具 + 115 测试全绿，开发文档与代码同步 |
 
 ### 1.1 目标
 - 让 dsh Agent 能对 PostgreSQL / MySQL 执行**只读**查询：查数据、列表、看表结构。
@@ -89,6 +89,17 @@
 
 **不在范围（v0.7）**：写操作、执行 DDL、跨库查询。
 
+### 1.9 范围（v0.8，阶段 11）
+| 工具 | 功能 | 需凭据 |
+|---|---|---|
+| `sql_search_tables` | 按表/视图/物化视图名称搜索（支持 `%`/`_`，最多 100 条；PG：public schema；MySQL：当前库） | 是 |
+| `sql_database_size` | 当前数据库总容量（PG：`pg_database_size`；MySQL：`DATA_LENGTH` + `INDEX_LENGTH`） | 是 |
+| `sql_list_table_sizes` | 列出所有表容量，按总大小从大到小（PG：public schema；MySQL：当前库 BASE TABLE） | 是 |
+| `sql_get_table_comments` | 查看表注释与全部列注释（PG：`obj_description`/`col_description`；MySQL：information_schema） | 是 |
+| `sql_list_incoming_foreign_keys` | 列出引用指定表的外键（子表影响分析，PG/MySQL 双驱动） | 是 |
+
+**不在范围（v0.8）**：写操作、执行 DDL、跨库查询、执行计划分析。
+
 ## 2. 技术背景（契约要点，同 dsh-tool-github 已验证）
 
 - `defineTool` 契约：参数自动校验、输出规范 JSON 值、`exec.signal` 透传、`presentCall`/`presentResult` 纯函数。
@@ -155,6 +166,11 @@
 ### 阶段 10：v0.7 扩展（实例级授权与分区发现）
 - [x] Driver 新增 `listDatabases`/`listRoles`/`listGrants`/`listMaterializedViews`/`listPartitions`/`getTableRowCount` + PG/MySQL 实现
 - [x] 注册 6 个新工具：`sql_list_databases`/`sql_list_roles`/`sql_list_grants`/`sql_list_materialized_views`/`sql_list_partitions`/`sql_get_table_row_count` + UI 呈现
+- [x] 验收：mock 单测；typecheck；build；README 双语更新 + 推送
+
+### 阶段 11：v0.8 扩展（表发现、注释、依赖与容量）
+- [x] Driver 新增 `searchTables`/`databaseSize`/`listTableSizes`/`getTableComments`/`listIncomingForeignKeys` + PG/MySQL 实现
+- [x] 注册 5 个新工具：`sql_search_tables`/`sql_database_size`/`sql_list_table_sizes`/`sql_get_table_comments`/`sql_list_incoming_foreign_keys` + UI 呈现
 - [x] 验收：mock 单测；typecheck；build；README 双语更新 + 推送
 
 ## 4. 开发日志
@@ -250,6 +266,17 @@
 - 注册 6 个新工具：`sql_list_databases`/`sql_list_roles`/`sql_list_grants`/`sql_list_materialized_views`/`sql_list_partitions`/`sql_get_table_row_count`（共 26 工具）。
 - 测试增至 102/102（client 36 + tools 66）；typecheck / build 全绿。
 
+### 2026-08-25（阶段 11 规划）
+- 规划 v0.8：表发现、表/列注释、入向外键、数据库容量与全表容量，全部保持只读安全模型。
+- `sql_database_size` 在 PostgreSQL 只提供总容量（`pg_database_size`），数据/索引明细标注为 `null`；MySQL 可分别汇总 `DATA_LENGTH`/`INDEX_LENGTH`。
+
+### 2026-08-25（阶段 11 实现）
+- Driver 接口新增 `searchTables`/`databaseSize`/`listTableSizes`/`getTableComments`/`listIncomingForeignKeys`，PG/MySQL 双驱动实现。
+  - PG 表搜索：`pg_class.relkind` 区分 table/view/materialized view；容量：`pg_total_relation_size`/`pg_relation_size`/`pg_indexes_size`；注释：`obj_description`/`col_description`；入向外键：information_schema 三表 JOIN 按被引用表过滤。
+  - MySQL 表搜索：`information_schema.tables` 按 LIKE；容量：`DATA_LENGTH` + `INDEX_LENGTH`；注释：`TABLE_COMMENT`/`COLUMN_COMMENT`；入向外键：`REFERENCED_TABLE_NAME` 过滤。
+- 注册 5 个新工具：`sql_search_tables`/`sql_database_size`/`sql_list_table_sizes`/`sql_get_table_comments`/`sql_list_incoming_foreign_keys`（共 31 工具）。
+- 测试增至 115/115（client 39 + tools 76）；typecheck / build 全绿。
+
 ## 5. 风险与决策记录
 
 | 时间 | 决策/风险 | 说明 |
@@ -268,6 +295,7 @@
 | 2026-08-25 | MySQL 无序列对象 | `sql_list_sequences` 使用与 extensions 相同的 `{ supported: false }` 模式，避免误导 |
 | 2026-08-25 | 约束发现范围 | 只覆盖 PRIMARY KEY/UNIQUE/CHECK；外键已有专工具，避免输出重复噪点 |
 | 2026-08-25 | MySQL 无物化视图 | `sql_list_materialized_views` 在 MySQL 返回 `{ supported: false }`，避免误认为有对象 |
+| 2026-08-25 | PG 数据库容量不拆分 data/index | `pg_database_size` 提供数据库总量；dataBytes/indexBytes 用 `null` 表达不可用，避免伪造明细 |
 | 2026-08-25 | MySQL mysql.user 可能无权限 | `sql_list_roles` 失败时退化到 `USER_PRIVILEGES`，宁可返回较少属性也不让工具直接报错 |
 | 2026-08-25 | 精确行数可能扫描大表 | `sql_get_table_row_count` 保持精确语义，工具描述明确提示耗时风险 |
 | 2026-08-14 | 风险：npm 发布受 2FA 限制 | 同 dsh-tool-github，先 GitHub 安装方式 |

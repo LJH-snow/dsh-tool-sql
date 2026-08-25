@@ -84,6 +84,11 @@ npm install /path/to/dsh-tool-sql
 | `sql_list_foreign_keys` | 列出外键（表.列 → 引用表.引用列） |
 | `sql_schema_dump` | 导出整库结构：所有表 DDL + 视图定义 |
 | `sql_list_extensions` | 列出数据库扩展（PostgreSQL）；MySQL 提示不支持 |
+| `sql_search_tables` | 按表/视图/物化视图名称搜索（支持 `%`/`_`，最多 100 条） |
+| `sql_database_size` | 当前数据库容量（PostgreSQL 为总量；MySQL 为数据+索引） |
+| `sql_list_table_sizes` | 列出所有表的磁盘占用，按总量从大到小 |
+| `sql_get_table_comments` | 查看表注释与全部列注释 |
+| `sql_list_incoming_foreign_keys` | 查看引用指定表的外键，用于子表影响分析 |
 
 ## 开发
 

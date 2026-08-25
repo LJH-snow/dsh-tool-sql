@@ -84,6 +84,11 @@ Full example: [examples/cordis.yml](examples/cordis.yml).
 | `sql_list_foreign_keys` | List foreign keys (table/column → referenced table/column) |
 | `sql_schema_dump` | Export whole-database structure: all table DDLs + view definitions |
 | `sql_list_extensions` | List extensions (PostgreSQL); MySQL reports not supported |
+| `sql_search_tables` | Search table/view/materialized view names (supports `%`/`_`, up to 100) |
+| `sql_database_size` | Current database disk usage (PostgreSQL total; MySQL data + index) |
+| `sql_list_table_sizes` | Disk usage for every table, largest first |
+| `sql_get_table_comments` | Show the table comment and all column comments |
+| `sql_list_incoming_foreign_keys` | Show foreign keys from other tables that reference a target table |
 
 ## Development
 

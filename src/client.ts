@@ -167,6 +167,38 @@ export interface TableRowCount {
   rowCount: number
 }
 
+export interface TableMatch {
+  schema: string
+  name: string
+  kind: 'table' | 'view' | 'materialized view'
+}
+
+export interface DatabaseSize {
+  database: string
+  totalBytes: number
+  dataBytes: number | null
+  indexBytes: number | null
+}
+
+export interface TableSizeItem {
+  schema: string
+  table: string
+  dataBytes: number
+  indexBytes: number
+  totalBytes: number
+}
+
+export interface ColumnComment {
+  name: string
+  comment: string | null
+}
+
+export interface TableCommentInfo {
+  table: string
+  tableComment: string | null
+  columns: ColumnComment[]
+}
+
 /** SQL driver adapter; implementations live in drivers/* and are dynamically imported. */
 export interface Driver {
   query(sql: string, signal?: AbortSignal): Promise<{ columns: string[]; rows: Array<Record<string, unknown>> }>
@@ -194,6 +226,11 @@ export interface Driver {
   listMaterializedViews(signal?: AbortSignal): Promise<MaterializedViewInfo[]>
   listPartitions(signal?: AbortSignal): Promise<PartitionInfo[]>
   getTableRowCount(table: string, signal?: AbortSignal): Promise<TableRowCount>
+  searchTables(pattern: string, signal?: AbortSignal): Promise<TableMatch[]>
+  databaseSize(signal?: AbortSignal): Promise<DatabaseSize>
+  listTableSizes(signal?: AbortSignal): Promise<TableSizeItem[]>
+  getTableComments(table: string, signal?: AbortSignal): Promise<TableCommentInfo>
+  listIncomingForeignKeys(table: string, signal?: AbortSignal): Promise<ForeignKeyInfo[]>
   close(): Promise<void>
 }
 
@@ -530,6 +567,57 @@ export class DbClient {
     const driver = await this.getDriver()
     try {
       return await driver.listExtensions(this.combinedSignal(signal))
+    } catch (error) {
+      if (error instanceof SqlError) throw error
+      throw new SqlError(error instanceof Error ? error.message : String(error), 'query')
+    }
+  }
+
+  async searchTables(pattern: string, signal?: AbortSignal): Promise<TableMatch[]> {
+    const driver = await this.getDriver()
+    try {
+      const normalized = pattern.includes('%') ? pattern : `%${pattern}%`
+      return await driver.searchTables(normalized, this.combinedSignal(signal))
+    } catch (error) {
+      if (error instanceof SqlError) throw error
+      throw new SqlError(error instanceof Error ? error.message : String(error), 'query')
+    }
+  }
+
+  async databaseSize(signal?: AbortSignal): Promise<DatabaseSize> {
+    const driver = await this.getDriver()
+    try {
+      return await driver.databaseSize(this.combinedSignal(signal))
+    } catch (error) {
+      if (error instanceof SqlError) throw error
+      throw new SqlError(error instanceof Error ? error.message : String(error), 'query')
+    }
+  }
+
+  async listTableSizes(signal?: AbortSignal): Promise<TableSizeItem[]> {
+    const driver = await this.getDriver()
+    try {
+      return await driver.listTableSizes(this.combinedSignal(signal))
+    } catch (error) {
+      if (error instanceof SqlError) throw error
+      throw new SqlError(error instanceof Error ? error.message : String(error), 'query')
+    }
+  }
+
+  async getTableComments(table: string, signal?: AbortSignal): Promise<TableCommentInfo> {
+    const driver = await this.getDriver()
+    try {
+      return await driver.getTableComments(table, this.combinedSignal(signal))
+    } catch (error) {
+      if (error instanceof SqlError) throw error
+      throw new SqlError(error instanceof Error ? error.message : String(error), 'query')
+    }
+  }
+
+  async listIncomingForeignKeys(table: string, signal?: AbortSignal): Promise<ForeignKeyInfo[]> {
+    const driver = await this.getDriver()
+    try {
+      return await driver.listIncomingForeignKeys(table, this.combinedSignal(signal))
     } catch (error) {
       if (error instanceof SqlError) throw error
       throw new SqlError(error instanceof Error ? error.message : String(error), 'query')

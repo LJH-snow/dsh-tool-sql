@@ -83,6 +83,20 @@ function mockDriver(overrides: Partial<Driver> = {}): Driver {
     listMaterializedViews: vi.fn(async () => [{ name: 'daily_sales', definition: 'SELECT * FROM sales WHERE day = CURRENT_DATE' }]),
     listPartitions: vi.fn(async () => [{ parent: 'orders', partition: 'orders_2026', method: 'RANGE', bound: 'FOR VALUES FROM (\'2026-01-01\') TO (\'2027-01-01\')', estimatedRows: 100 }]),
     getTableRowCount: vi.fn(async () => ({ table: 'users', rowCount: 42 })),
+    searchTables: vi.fn(async () => [
+      { schema: 'public', name: 'order_items', kind: 'table' },
+      { schema: 'public', name: 'order_summary', kind: 'view' },
+    ]),
+    databaseSize: vi.fn(async () => ({ database: 'db', totalBytes: 4096, dataBytes: 1024, indexBytes: 3072 })),
+    listTableSizes: vi.fn(async () => [{ schema: 'public', table: 'orders', dataBytes: 1024, indexBytes: 512, totalBytes: 1536 }]),
+    getTableComments: vi.fn(async () => ({
+      table: 'users',
+      tableComment: 'accounts',
+      columns: [{ name: 'id', comment: 'primary key' }, { name: 'email', comment: null }],
+    })),
+    listIncomingForeignKeys: vi.fn(async () => [
+      { name: 'orders_user_id_fkey', table: 'orders', column: 'user_id', referencedTable: 'users', referencedColumn: 'id' },
+    ]),
     close: vi.fn(async () => {}),
     ...overrides,
   }
@@ -336,5 +350,40 @@ describe('DbClient v0.2 methods', () => {
     const driver = mockDriver({ listDatabases: vi.fn(async () => { throw new Error('catalog unavailable') }) })
     const client = makeClient(driver)
     await expect(client.listDatabases()).rejects.toMatchObject({ kind: 'query', message: 'catalog unavailable' })
+  })
+
+  it('v0.8 metadata methods return search/comments/size/reference info', async () => {
+    const client = makeClient(mockDriver())
+    expect(await client.searchTables('order')).toEqual([
+      { schema: 'public', name: 'order_items', kind: 'table' },
+      { schema: 'public', name: 'order_summary', kind: 'view' },
+    ])
+    expect(await client.databaseSize()).toEqual({ database: 'db', totalBytes: 4096, dataBytes: 1024, indexBytes: 3072 })
+    expect(await client.listTableSizes()).toEqual([
+      { schema: 'public', table: 'orders', dataBytes: 1024, indexBytes: 512, totalBytes: 1536 },
+    ])
+    expect(await client.getTableComments('users')).toEqual({
+      table: 'users',
+      tableComment: 'accounts',
+      columns: [{ name: 'id', comment: 'primary key' }, { name: 'email', comment: null }],
+    })
+    expect(await client.listIncomingForeignKeys('users')).toEqual([
+      { name: 'orders_user_id_fkey', table: 'orders', column: 'user_id', referencedTable: 'users', referencedColumn: 'id' },
+    ])
+  })
+
+  it('searchTables normalizes a bare pattern and passes through wildcard patterns', async () => {
+    const driver = mockDriver()
+    const client = makeClient(driver)
+    await client.searchTables('order')
+    expect(driver.searchTables).toHaveBeenCalledWith('%order%', expect.anything())
+    await client.searchTables('%_2026%')
+    expect(driver.searchTables).toHaveBeenCalledWith('%_2026%', expect.anything())
+  })
+
+  it('maps driver errors from v0.8 metadata methods to SqlError', async () => {
+    const driver = mockDriver({ listTableSizes: vi.fn(async () => { throw new Error('catalog unavailable') }) })
+    const client = makeClient(driver)
+    await expect(client.listTableSizes()).rejects.toMatchObject({ kind: 'query', message: 'catalog unavailable' })
   })
 })

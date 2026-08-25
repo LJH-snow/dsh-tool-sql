@@ -1,4 +1,4 @@
-import type { Driver, DbConfig, ColumnInfo, IndexInfo, DatabaseInfo, TableStat, ColumnMatch, ViewInfo, TableSize, SchemaInfo, FunctionInfo, TriggerInfo, ForeignKeyInfo, SchemaDump, ExtensionInfo, SequenceInfo, ConstraintInfo, DatabaseItem, RoleInfo, GrantInfo, MaterializedViewInfo, PartitionInfo, TableRowCount } from '../client.js'
+import type { Driver, DbConfig, ColumnInfo, IndexInfo, DatabaseInfo, TableStat, ColumnMatch, ViewInfo, TableSize, SchemaInfo, FunctionInfo, TriggerInfo, ForeignKeyInfo, SchemaDump, ExtensionInfo, SequenceInfo, ConstraintInfo, DatabaseItem, RoleInfo, GrantInfo, MaterializedViewInfo, PartitionInfo, TableRowCount, TableMatch, DatabaseSize, TableSizeItem, TableCommentInfo } from '../client.js'
 import { assertSafeIdentifier } from '../client.js'
 
 export async function createMysqlDriver(config: DbConfig): Promise<Driver> {
@@ -382,6 +382,115 @@ export async function createMysqlDriver(config: DbConfig): Promise<Driver> {
     },
     async listExtensions() {
       return [] as ExtensionInfo[]
+    },
+    async searchTables(pattern) {
+      const [rows] = await conn.query(
+        `SELECT TABLE_SCHEMA AS schema_name, TABLE_NAME AS table_name,
+                IF(TABLE_TYPE = 'BASE TABLE', 'table', 'view') AS kind
+         FROM information_schema.tables
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME LIKE ?
+         ORDER BY kind, TABLE_NAME
+         LIMIT 100`,
+        [pattern],
+      )
+      const list = rows as Array<{ schema_name: string; table_name: string; kind: string }>
+      return list.map<TableMatch>(r => ({
+        schema: r.schema_name,
+        name: r.table_name,
+        kind: r.kind as TableMatch['kind'],
+      }))
+    },
+    async databaseSize() {
+      const [rows] = await conn.query(
+        `SELECT DATABASE() AS database_name,
+                IFNULL(SUM(DATA_LENGTH), 0) AS data,
+                IFNULL(SUM(INDEX_LENGTH), 0) AS idx
+         FROM information_schema.tables
+         WHERE TABLE_SCHEMA = DATABASE()`,
+      )
+      const list = rows as Array<{ database_name: string | null; data: number | null; idx: number | null }>
+      const row = list[0]
+      const dataBytes = Number(row?.data ?? 0)
+      const indexBytes = Number(row?.idx ?? 0)
+      return {
+        database: row?.database_name ?? '',
+        totalBytes: dataBytes + indexBytes,
+        dataBytes,
+        indexBytes,
+      } as DatabaseSize
+    },
+    async listTableSizes() {
+      const [rows] = await conn.query(
+        `SELECT TABLE_SCHEMA AS schema_name, TABLE_NAME AS table_name,
+                DATA_LENGTH AS data, INDEX_LENGTH AS idx
+         FROM information_schema.tables
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = 'BASE TABLE'
+         ORDER BY (DATA_LENGTH + INDEX_LENGTH) DESC`,
+      )
+      const list = rows as Array<{
+        schema_name: string
+        table_name: string
+        data: number | null
+        idx: number | null
+      }>
+      return list.map<TableSizeItem>(r => {
+        const dataBytes = Number(r.data ?? 0)
+        const indexBytes = Number(r.idx ?? 0)
+        return {
+          schema: r.schema_name,
+          table: r.table_name,
+          dataBytes,
+          indexBytes,
+          totalBytes: dataBytes + indexBytes,
+        }
+      })
+    },
+    async getTableComments(table) {
+      const [tableRows] = await conn.query(
+        'SELECT TABLE_COMMENT AS comment FROM information_schema.tables WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?',
+        [table],
+      )
+      const [columnRows] = await conn.query(
+        `SELECT COLUMN_NAME AS name, COLUMN_COMMENT AS comment
+         FROM information_schema.columns
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?
+         ORDER BY ORDINAL_POSITION`,
+        [table],
+      )
+      const tables = tableRows as Array<{ comment: string | null }>
+      const columns = columnRows as Array<{ name: string; comment: string | null }>
+      if (columns.length === 0) throw new Error(`Table "${table}" not found.`)
+      const rawTableComment = tables[0]?.comment
+      return {
+        table,
+        tableComment: rawTableComment ? String(rawTableComment) : null,
+        columns: columns.map(r => ({ name: r.name, comment: r.comment ? String(r.comment) : null })),
+      } as TableCommentInfo
+    },
+    async listIncomingForeignKeys(table) {
+      const [rows] = await conn.query(
+        `SELECT CONSTRAINT_NAME AS name, TABLE_NAME AS table_name, COLUMN_NAME AS column_name,
+                REFERENCED_TABLE_NAME AS referenced_table, REFERENCED_COLUMN_NAME AS referenced_column
+         FROM information_schema.key_column_usage
+         WHERE TABLE_SCHEMA = DATABASE() AND REFERENCED_TABLE_SCHEMA = DATABASE()
+           AND REFERENCED_TABLE_NAME = ?
+         ORDER BY TABLE_NAME, ORDINAL_POSITION`,
+        [table],
+      )
+      const list = rows as Array<{
+        name: string
+        table_name: string
+        column_name: string
+        referenced_table: string
+        referenced_column: string
+      }>
+      return list.map<ForeignKeyInfo>(r => ({
+        name: r.name,
+        table: r.table_name,
+        column: r.column_name,
+        referencedTable: r.referenced_table,
+        referencedColumn: r.referenced_column,
+      }))
     },
     async close() {
       await conn.end()

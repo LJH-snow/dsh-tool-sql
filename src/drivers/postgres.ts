@@ -1,4 +1,4 @@
-import type { Driver, DbConfig, ColumnInfo, IndexInfo, DatabaseInfo, TableStat, ColumnMatch, ViewInfo, TableSize, SchemaInfo, FunctionInfo, TriggerInfo, ForeignKeyInfo, SchemaDump, ExtensionInfo, SequenceInfo, ConstraintInfo, DatabaseItem, RoleInfo, GrantInfo, MaterializedViewInfo, PartitionInfo, TableRowCount } from '../client.js'
+import type { Driver, DbConfig, ColumnInfo, IndexInfo, DatabaseInfo, TableStat, ColumnMatch, ViewInfo, TableSize, SchemaInfo, FunctionInfo, TriggerInfo, ForeignKeyInfo, SchemaDump, ExtensionInfo, SequenceInfo, ConstraintInfo, DatabaseItem, RoleInfo, GrantInfo, MaterializedViewInfo, PartitionInfo, TableRowCount, TableMatch, DatabaseSize, TableSizeItem, TableCommentInfo } from '../client.js'
 import { SqlError, assertSafeIdentifier } from '../client.js'
 
 export async function createPostgresDriver(config: DbConfig): Promise<Driver> {
@@ -447,6 +447,118 @@ export async function createPostgresDriver(config: DbConfig): Promise<Driver> {
         `SELECT extname AS name, extversion AS version FROM pg_extension ORDER BY extname`,
       )
       return result.rows.map<ExtensionInfo>(r => ({ name: r.name, version: r.version }))
+    },
+    async searchTables(pattern) {
+      const result = await client.query<{ schema_name: string; table_name: string; kind: string }>(
+        `SELECT n.nspname AS schema_name, c.relname AS table_name,
+                CASE c.relkind
+                  WHEN 'r' THEN 'table'
+                  WHEN 'v' THEN 'view'
+                  WHEN 'm' THEN 'materialized view'
+                END AS kind
+         FROM pg_class c
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE n.nspname = 'public' AND c.relkind IN ('r', 'v', 'm') AND c.relname ILIKE $1
+         ORDER BY kind, c.relname
+         LIMIT 100`,
+        [pattern],
+      )
+      return result.rows.map<TableMatch>(r => ({
+        schema: r.schema_name,
+        name: r.table_name,
+        kind: r.kind as TableMatch['kind'],
+      }))
+    },
+    async databaseSize() {
+      const result = await client.query<{ database: string; total: string }>(
+        'SELECT current_database() AS database, pg_database_size(current_database())::bigint AS total',
+      )
+      const row = result.rows[0]
+      return {
+        database: row?.database ?? '',
+        totalBytes: Number(row?.total ?? 0),
+        dataBytes: null,
+        indexBytes: null,
+      } as DatabaseSize
+    },
+    async listTableSizes() {
+      const result = await client.query<{
+        schema_name: string
+        table_name: string
+        data: string
+        index: string
+        total: string
+      }>(
+        `SELECT n.nspname AS schema_name, c.relname AS table_name,
+                pg_relation_size(c.oid) AS data, pg_indexes_size(c.oid) AS index,
+                pg_total_relation_size(c.oid) AS total
+         FROM pg_class c
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE n.nspname = 'public' AND c.relkind = 'r'
+         ORDER BY total DESC`,
+      )
+      return result.rows.map<TableSizeItem>(r => ({
+        schema: r.schema_name,
+        table: r.table_name,
+        dataBytes: Number(r.data ?? 0),
+        indexBytes: Number(r.index ?? 0),
+        totalBytes: Number(r.total ?? 0),
+      }))
+    },
+    async getTableComments(table) {
+      const columns = await client.query<{ name: string; comment: string | null }>(
+        `SELECT a.attname AS name, col_description(c.oid, a.attnum) AS comment
+         FROM pg_class c
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+         JOIN pg_attribute a ON a.attrelid = c.oid
+         WHERE n.nspname = 'public' AND c.relname = $1 AND a.attnum > 0 AND NOT a.attisdropped
+         ORDER BY a.attnum`,
+        [table],
+      )
+      if (columns.rows.length === 0) {
+        throw new SqlError(`Table "${table}" not found in public schema.`, 'query')
+      }
+      const tables = await client.query<{ table_comment: string | null }>(
+        `SELECT obj_description(c.oid, 'pg_class') AS table_comment
+         FROM pg_class c
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE n.nspname = 'public' AND c.relname = $1 AND c.relkind IN ('r', 'v', 'm')`,
+        [table],
+      )
+      return {
+        table,
+        tableComment: tables.rows[0]?.table_comment ?? null,
+        columns: columns.rows.map(r => ({ name: r.name, comment: r.comment })),
+      } as TableCommentInfo
+    },
+    async listIncomingForeignKeys(table) {
+      const result = await client.query<{
+        name: string
+        table: string
+        column: string
+        referenced_table: string
+        referenced_column: string
+      }>(
+        `SELECT tc.constraint_name AS name, tc.table_name AS table,
+                kcu.column_name AS column, ccu.table_name AS referenced_table,
+                ccu.column_name AS referenced_column
+         FROM information_schema.table_constraints tc
+         JOIN information_schema.key_column_usage kcu
+           ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
+         JOIN information_schema.constraint_column_usage ccu
+           ON ccu.constraint_name = tc.constraint_name AND ccu.table_schema = tc.table_schema
+         WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_schema = 'public'
+           AND ccu.table_schema = 'public' AND ccu.table_name = $1
+         ORDER BY tc.table_name, kcu.ordinal_position`,
+        [table],
+      )
+      return result.rows.map<ForeignKeyInfo>(r => ({
+        name: r.name,
+        table: r.table,
+        column: r.column,
+        referencedTable: r.referenced_table,
+        referencedColumn: r.referenced_column,
+      }))
     },
     async close() {
       await client.end()
