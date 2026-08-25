@@ -99,6 +99,11 @@ Full example: [examples/cordis.yml](examples/cordis.yml).
 | `sql_list_index_usage` | PostgreSQL index usage statistics; MySQL reports not supported |
 | `sql_list_locks` | List locks visible to the connection (PostgreSQL pg_locks, MySQL performance_schema) |
 | `sql_get_table_last_access` | PostgreSQL last seq/index scan times and counts; MySQL reports not supported |
+| `sql_search_view_definitions` | Search views by name or definition text and return their definitions |
+| `sql_search_routine_definitions` | Search functions/procedures by name or source text and return full definitions |
+| `sql_search_trigger_definitions` | Search triggers by trigger/table/action text and return definitions or action statements |
+| `sql_search_constraint_definitions` | Search PK/UNIQUE/CHECK constraint definitions by name or definition text |
+| `sql_search_table_ddl` | Search tables by name and return CREATE TABLE DDL (PostgreSQL simplified; MySQL server output) |
 
 ## Development
 

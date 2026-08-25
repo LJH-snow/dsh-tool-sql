@@ -1,4 +1,4 @@
-import type { Driver, DbConfig, ColumnInfo, IndexInfo, DatabaseInfo, TableStat, ColumnMatch, ViewInfo, TableSize, SchemaInfo, FunctionInfo, TriggerInfo, ForeignKeyInfo, SchemaDump, ExtensionInfo, SequenceInfo, ConstraintInfo, DatabaseItem, RoleInfo, GrantInfo, MaterializedViewInfo, PartitionInfo, TableRowCount, TableMatch, DatabaseSize, TableSizeItem, TableCommentInfo, ColumnStats, FunctionSourceInfo, EnumTypeInfo, TableHealth, ActiveQueryInfo, RoutineMatchInfo, IndexMatchInfo, IndexUsageInfo, LockInfo, TableAccessInfo } from '../client.js'
+import type { Driver, DbConfig, ColumnInfo, IndexInfo, DatabaseInfo, TableStat, ColumnMatch, ViewInfo, TableSize, SchemaInfo, FunctionInfo, TriggerInfo, ForeignKeyInfo, SchemaDump, ExtensionInfo, SequenceInfo, ConstraintInfo, DatabaseItem, RoleInfo, GrantInfo, MaterializedViewInfo, PartitionInfo, TableRowCount, TableMatch, DatabaseSize, TableSizeItem, TableCommentInfo, ColumnStats, FunctionSourceInfo, EnumTypeInfo, TableHealth, ActiveQueryInfo, RoutineMatchInfo, IndexMatchInfo, IndexUsageInfo, LockInfo, TableAccessInfo, ViewDefinitionMatchInfo, RoutineDefinitionMatchInfo, TriggerDefinitionMatchInfo, ConstraintDefinitionMatchInfo, TableDefinitionMatchInfo } from '../client.js'
 import { SqlError, assertSafeIdentifier } from '../client.js'
 
 export async function createPostgresDriver(config: DbConfig): Promise<Driver> {
@@ -86,6 +86,11 @@ export async function createPostgresDriver(config: DbConfig): Promise<Driver> {
       columns: r.columns ?? [],
       definition: r.definition,
     }))
+  }
+
+  function parseTrigger(definition: string): { timing: string; event: string } {
+    const match = /CREATE TRIGGER \S+ (BEFORE|AFTER|INSTEAD OF) (INSERT|UPDATE|DELETE|TRUNCATE)/.exec(definition)
+    return { timing: match?.[1] ?? '', event: match?.[2] ?? '' }
   }
 
   return {
@@ -389,12 +394,12 @@ export async function createPostgresDriver(config: DbConfig): Promise<Driver> {
          ORDER BY c.relname, t.tgname`,
       )
       return result.rows.map<TriggerInfo>(r => {
-        const match = /CREATE TRIGGER \S+ (BEFORE|AFTER|INSTEAD OF) (INSERT|UPDATE|DELETE|TRUNCATE)/.exec(r.definition)
+        const parsed = parseTrigger(r.definition)
         return {
           name: r.name,
           table: r.table,
-          timing: match?.[1] ?? '',
-          event: match?.[2] ?? '',
+          timing: parsed.timing,
+          event: parsed.event,
           definition: r.definition,
         }
       })
@@ -872,6 +877,137 @@ export async function createPostgresDriver(config: DbConfig): Promise<Driver> {
         seqScans: row.seq_scan === null || row.seq_scan === undefined ? null : Number(row.seq_scan),
         indexScans: row.idx_scan === null || row.idx_scan === undefined ? null : Number(row.idx_scan),
       } as TableAccessInfo
+    },
+    async searchViewDefinitions(pattern) {
+      const result = await client.query<{
+        schema_name: string
+        name: string
+        definition: string | null
+      }>(
+        `SELECT schemaname AS schema_name, viewname AS name, definition
+         FROM pg_views
+         WHERE schemaname = 'public' AND (viewname ILIKE $1 OR definition ILIKE $1)
+         ORDER BY viewname
+         LIMIT 100`,
+        [pattern],
+      )
+      return result.rows.map<ViewDefinitionMatchInfo>(r => ({
+        schema: r.schema_name,
+        name: r.name,
+        definition: r.definition,
+      }))
+    },
+    async searchRoutineDefinitions(pattern) {
+      const result = await client.query<{
+        schema_name: string
+        name: string
+        kind: string
+        arguments: string
+        language: string
+        source: string
+      }>(
+        `SELECT n.nspname AS schema_name, p.proname AS name,
+                CASE WHEN p.prokind = 'p' THEN 'procedure' ELSE 'function' END AS kind,
+                pg_get_function_identity_arguments(p.oid) AS arguments,
+                l.lanname AS language,
+                pg_get_functiondef(p.oid) AS source
+         FROM pg_proc p
+         JOIN pg_namespace n ON n.oid = p.pronamespace
+         JOIN pg_language l ON l.oid = p.prolang
+         WHERE n.nspname = 'public' AND p.prokind IN ('f', 'p')
+           AND (p.proname ILIKE $1 OR p.prosrc ILIKE $1)
+         ORDER BY p.proname, pg_get_function_identity_arguments(p.oid)
+         LIMIT 100`,
+        [pattern],
+      )
+      return result.rows.map<RoutineDefinitionMatchInfo>(r => ({
+        schema: r.schema_name,
+        name: r.name,
+        kind: r.kind as RoutineDefinitionMatchInfo['kind'],
+        arguments: r.arguments,
+        language: r.language,
+        source: r.source ?? null,
+      }))
+    },
+    async searchTriggerDefinitions(pattern) {
+      const result = await client.query<{
+        schema_name: string
+        table_name: string
+        name: string
+        definition: string
+      }>(
+        `SELECT n.nspname AS schema_name, c.relname AS table_name,
+                t.tgname AS name, pg_get_triggerdef(t.oid) AS definition
+         FROM pg_trigger t
+         JOIN pg_class c ON c.oid = t.tgrelid
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE n.nspname = 'public' AND NOT t.tgisinternal
+           AND (t.tgname ILIKE $1 OR pg_get_triggerdef(t.oid) ILIKE $1)
+         ORDER BY c.relname, t.tgname
+         LIMIT 100`,
+        [pattern],
+      )
+      return result.rows.map<TriggerDefinitionMatchInfo>(r => {
+        const parsed = parseTrigger(r.definition)
+        return {
+          schema: r.schema_name,
+          table: r.table_name,
+          name: r.name,
+          timing: parsed.timing,
+          event: parsed.event,
+          definition: r.definition ?? null,
+        }
+      })
+    },
+    async searchConstraintDefinitions(pattern) {
+      const result = await client.query<{
+        schema_name: string
+        table_name: string
+        name: string
+        type: string
+        definition: string
+      }>(
+        `SELECT n.nspname AS schema_name, c.relname AS table_name,
+                con.conname AS name,
+                CASE con.contype
+                  WHEN 'p' THEN 'PRIMARY KEY'
+                  WHEN 'u' THEN 'UNIQUE'
+                  WHEN 'c' THEN 'CHECK'
+                END AS type,
+                pg_get_constraintdef(con.oid) AS definition
+         FROM pg_constraint con
+         JOIN pg_class c ON c.oid = con.conrelid
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE n.nspname = 'public' AND con.contype IN ('p', 'u', 'c') AND con.conrelid <> 0
+           AND (con.conname ILIKE $1 OR pg_get_constraintdef(con.oid) ILIKE $1)
+         ORDER BY c.relname, con.conname
+         LIMIT 100`,
+        [pattern],
+      )
+      return result.rows.map<ConstraintDefinitionMatchInfo>(r => ({
+        schema: r.schema_name,
+        table: r.table_name,
+        name: r.name,
+        type: r.type as ConstraintDefinitionMatchInfo['type'],
+        definition: r.definition ?? null,
+        simplified: false,
+      }))
+    },
+    async searchTableDefinitions(pattern) {
+      const result = await client.query<{ table_name: string }>(
+        `SELECT tablename AS table_name
+         FROM pg_tables
+         WHERE schemaname = 'public' AND tablename ILIKE $1
+         ORDER BY tablename
+         LIMIT 100`,
+        [pattern],
+      )
+      const matches: TableDefinitionMatchInfo[] = []
+      for (const row of result.rows) {
+        const schema = await createSchema(row.table_name)
+        matches.push({ schema: 'public', table: row.table_name, definition: schema.ddl, simplified: true })
+      }
+      return matches
     },
     async close() {
       await client.end()

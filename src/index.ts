@@ -2030,6 +2030,271 @@ export function createTools(client: DbClient) {
         return await client.getTableLastAccess(args.table, exec.signal)
       },
     }),
+
+    defineTool({
+      name: 'sql_search_view_definitions',
+      description:
+        'Search views by name or definition text (case-insensitive, supports % and _ wildcards). PostgreSQL returns public-schema views; MySQL returns current-database views. Read-only.',
+      parameters: {
+        pattern: { type: 'string', required: true, description: 'View name or definition text pattern, e.g. "sales" or "%active%"' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            matches: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  schema: { type: 'string', description: 'Schema/database name' },
+                  name: { type: 'string', description: 'View name' },
+                  definition: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'View definition SQL' },
+                },
+              },
+              description: 'Matching view definitions',
+            },
+          },
+        },
+        render: (_args, value) => {
+          const matches = value.matches ?? []
+          if (matches.length === 0) return [{ type: 'text', text: 'No matching view definitions found.' }]
+          const lines = ['schema\tview\tdefinition']
+          lines.push('---\t---\t---')
+          for (const m of matches) {
+            const preview = (m.definition ?? '').replace(/\s+/g, ' ').slice(0, 200)
+            lines.push(`${m.schema}\t${m.name}\t${preview}`)
+          }
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(args): ToolCallView {
+        return { card: 'generic', title: `Search view definitions: ${args.pattern}`, kind: 'search' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { matches?: unknown[] }
+        return { card: 'generic', title: `${v.matches?.length ?? 0} view definition(s)` }
+      },
+      async execute(args, exec) {
+        return { matches: await client.searchViewDefinitions(args.pattern, exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_search_routine_definitions',
+      description:
+        'Search functions and stored procedures by name or source/body text (case-insensitive, supports % and _ wildcards). PostgreSQL searches pg_proc source and returns pg_get_functiondef; MySQL searches information_schema.routines and returns SHOW CREATE FUNCTION/PROCEDURE. Read-only.',
+      parameters: {
+        pattern: { type: 'string', required: true, description: 'Routine name or source text pattern, e.g. "audit" or "INSERT INTO"' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            matches: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  schema: { type: 'string', description: 'Schema/database name' },
+                  name: { type: 'string', description: 'Routine name' },
+                  kind: { type: 'string', enum: ['function', 'procedure'], description: 'Routine kind' },
+                  arguments: { type: 'string', description: 'Argument signature where available' },
+                  language: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Implementation language' },
+                  source: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Full routine definition/source where available' },
+                },
+              },
+              description: 'Matching routine definitions',
+            },
+          },
+        },
+        render: (_args, value) => {
+          const matches = value.matches ?? []
+          if (matches.length === 0) return [{ type: 'text', text: 'No matching routine definitions found.' }]
+          const lines = ['schema\tname\tkind\targuments\tlanguage\tsource']
+          lines.push('---\t---\t---\t---\t---\t---')
+          for (const m of matches) {
+            const preview = (m.source ?? '').replace(/\s+/g, ' ').slice(0, 180)
+            lines.push(`${m.schema}\t${m.name}\t${m.kind}\t${m.arguments ?? ''}\t${m.language ?? ''}\t${preview}`)
+          }
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(args): ToolCallView {
+        return { card: 'generic', title: `Search routine definitions: ${args.pattern}`, kind: 'search' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { matches?: unknown[] }
+        return { card: 'generic', title: `${v.matches?.length ?? 0} routine definition(s)` }
+      },
+      async execute(args, exec) {
+        return { matches: await client.searchRoutineDefinitions(args.pattern, exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_search_trigger_definitions',
+      description:
+        'Search triggers by trigger name, table, or action statement text (case-insensitive, supports % and _ wildcards). PostgreSQL returns pg_get_triggerdef; MySQL returns information_schema.triggers action statements. Read-only.',
+      parameters: {
+        pattern: { type: 'string', required: true, description: 'Trigger name, table, or action text pattern, e.g. "audit" or "NEW.status"' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            matches: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  schema: { type: 'string', description: 'Schema/database name' },
+                  table: { type: 'string', description: 'Table name' },
+                  name: { type: 'string', description: 'Trigger name' },
+                  timing: { type: 'string', description: 'BEFORE, AFTER, or INSTEAD OF' },
+                  event: { type: 'string', description: 'Trigger event' },
+                  definition: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Trigger definition or action statement' },
+                },
+              },
+              description: 'Matching trigger definitions',
+            },
+          },
+        },
+        render: (_args, value) => {
+          const matches = value.matches ?? []
+          if (matches.length === 0) return [{ type: 'text', text: 'No matching trigger definitions found.' }]
+          const lines = ['schema\ttable\tname\ttiming\tevent\tdefinition']
+          lines.push('---\t---\t---\t---\t---\t---')
+          for (const m of matches) {
+            const preview = (m.definition ?? '').replace(/\s+/g, ' ').slice(0, 180)
+            lines.push(`${m.schema}\t${m.table}\t${m.name}\t${m.timing}\t${m.event}\t${preview}`)
+          }
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(args): ToolCallView {
+        return { card: 'generic', title: `Search trigger definitions: ${args.pattern}`, kind: 'search' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { matches?: unknown[] }
+        return { card: 'generic', title: `${v.matches?.length ?? 0} trigger definition(s)` }
+      },
+      async execute(args, exec) {
+        return { matches: await client.searchTriggerDefinitions(args.pattern, exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_search_constraint_definitions',
+      description:
+        'Search primary key, unique, and check constraints by name or definition text (case-insensitive, supports % and _ wildcards). PostgreSQL returns pg_get_constraintdef; MySQL returns CHECK_CLAUSE and constructs PK/UNIQUE definitions from catalog columns (marked simplified). Read-only.',
+      parameters: {
+        pattern: { type: 'string', required: true, description: 'Constraint name or definition text pattern, e.g. "pkey" or "age >="' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            matches: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  schema: { type: 'string', description: 'Schema/database name' },
+                  table: { type: 'string', description: 'Table name' },
+                  name: { type: 'string', description: 'Constraint name' },
+                  type: { type: 'string', enum: ['PRIMARY KEY', 'UNIQUE', 'CHECK'], description: 'Constraint type' },
+                  definition: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Constraint definition' },
+                  simplified: { type: 'boolean', description: 'True when PostgreSQL DDL was generated from catalog metadata or MySQL PK/UNIQUE definition was constructed' },
+                },
+              },
+              description: 'Matching constraint definitions',
+            },
+          },
+        },
+        render: (_args, value) => {
+          const matches = value.matches ?? []
+          if (matches.length === 0) return [{ type: 'text', text: 'No matching constraint definitions found.' }]
+          const lines = ['schema\ttable\ttype\tname\tdefinition\tgenerated']
+          lines.push('---\t---\t---\t---\t---\t---')
+          for (const m of matches) {
+            const preview = (m.definition ?? '').replace(/\s+/g, ' ').slice(0, 180)
+            lines.push(`${m.schema}\t${m.table}\t${m.type}\t${m.name}\t${preview}\t${m.simplified ? 'yes' : 'no'}`)
+          }
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(args): ToolCallView {
+        return { card: 'generic', title: `Search constraint definitions: ${args.pattern}`, kind: 'search' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { matches?: unknown[] }
+        return { card: 'generic', title: `${v.matches?.length ?? 0} constraint definition(s)` }
+      },
+      async execute(args, exec) {
+        return { matches: await client.searchConstraintDefinitions(args.pattern, exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_search_table_ddl',
+      description:
+        'Search tables by name and return CREATE TABLE DDL (case-insensitive, supports % and _ wildcards). PostgreSQL returns simplified DDL generated from information_schema; MySQL returns server SHOW CREATE TABLE output. Read-only.',
+      parameters: {
+        pattern: { type: 'string', required: true, description: 'Table name pattern, e.g. "order" or "%audit_%"' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            matches: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  schema: { type: 'string', description: 'Schema/database name' },
+                  table: { type: 'string', description: 'Table name' },
+                  definition: { type: 'string', description: 'CREATE TABLE DDL' },
+                  simplified: { type: 'boolean', description: 'True when PostgreSQL DDL was generated from catalog metadata instead of server output' },
+                },
+              },
+              description: 'Matching table DDL',
+            },
+          },
+        },
+        render: (_args, value) => {
+          const matches = value.matches ?? []
+          if (matches.length === 0) return [{ type: 'text', text: 'No matching table DDL found.' }]
+          const lines = ['schema\ttable\tgenerated\tdefinition']
+          lines.push('---\t---\t---\t---')
+          for (const m of matches) {
+            const preview = (m.definition ?? '').replace(/\s+/g, ' ').slice(0, 220)
+            lines.push(`${m.schema}\t${m.table}\t${m.simplified ? 'yes' : 'no'}\t${preview}`)
+          }
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(args): ToolCallView {
+        return { card: 'generic', title: `Search table DDL: ${args.pattern}`, kind: 'search' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { matches?: unknown[] }
+        return { card: 'generic', title: `${v.matches?.length ?? 0} table DDL(s)` }
+      },
+      async execute(args, exec) {
+        return { matches: await client.searchTableDefinitions(args.pattern, exec.signal) }
+      },
+    }),
   ]
 }
 

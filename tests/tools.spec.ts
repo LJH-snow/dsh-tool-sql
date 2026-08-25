@@ -128,6 +128,42 @@ function mockDriver(overrides: Partial<Driver> = {}): Driver {
       seqScans: 3,
       indexScans: 40,
     })),
+    searchViewDefinitions: vi.fn(async () => [
+      { schema: 'public', name: 'active_users', definition: 'SELECT * FROM users WHERE active' },
+    ]),
+    searchRoutineDefinitions: vi.fn(async () => [
+      {
+        schema: 'public',
+        name: 'get_orders',
+        kind: 'function',
+        arguments: 'customer_id integer',
+        language: 'sql',
+        source: 'CREATE FUNCTION public.get_orders(customer_id integer) RETURNS SETOF orders AS ...',
+      },
+    ]),
+    searchTriggerDefinitions: vi.fn(async () => [
+      {
+        schema: 'public',
+        table: 'users',
+        name: 'trg',
+        timing: 'AFTER',
+        event: 'INSERT',
+        definition: 'CREATE TRIGGER trg AFTER INSERT ON users FOR EACH ROW EXECUTE FUNCTION audit_row()',
+      },
+    ]),
+    searchConstraintDefinitions: vi.fn(async () => [
+      {
+        schema: 'public',
+        table: 'users',
+        name: 'users_age_check',
+        type: 'CHECK',
+        definition: 'CHECK ((age >= 0))',
+        simplified: false,
+      },
+    ]),
+    searchTableDefinitions: vi.fn(async () => [
+      { schema: 'public', table: 'users', definition: 'CREATE TABLE users (id integer);', simplified: true },
+    ]),
     close: vi.fn(async () => {}),
     ...overrides,
   }
@@ -175,9 +211,14 @@ describe('tool definitions', () => {
       'sql_query',
       'sql_schema_dump',
       'sql_search_columns',
+      'sql_search_constraint_definitions',
       'sql_search_indexes',
+      'sql_search_routine_definitions',
       'sql_search_routines',
+      'sql_search_table_ddl',
       'sql_search_tables',
+      'sql_search_trigger_definitions',
+      'sql_search_view_definitions',
       'sql_table_size',
       'sql_table_stats',
     ])
@@ -274,6 +315,16 @@ describe('tool definitions', () => {
     await expect(indexSearch.execute({} as never, exec())).rejects.toThrow()
     const lastAccess = tools()['sql_get_table_last_access']
     await expect(lastAccess.execute({} as never, exec())).rejects.toThrow()
+    const viewDefs = tools()['sql_search_view_definitions']
+    await expect(viewDefs.execute({} as never, exec())).rejects.toThrow()
+    const routineDefs = tools()['sql_search_routine_definitions']
+    await expect(routineDefs.execute({} as never, exec())).rejects.toThrow()
+    const triggerDefs = tools()['sql_search_trigger_definitions']
+    await expect(triggerDefs.execute({} as never, exec())).rejects.toThrow()
+    const constraintDefs = tools()['sql_search_constraint_definitions']
+    await expect(constraintDefs.execute({} as never, exec())).rejects.toThrow()
+    const tableDdl = tools()['sql_search_table_ddl']
+    await expect(tableDdl.execute({} as never, exec())).rejects.toThrow()
   })
 
   it('sql_explain prefixes EXPLAIN when missing and passes read-only check', async () => {
@@ -858,6 +909,106 @@ describe('tool definitions', () => {
     const result = await tool.execute({ table: 'users' }, exec())
     expect(result).toMatchObject({ supported: false })
   })
+
+  it('sql_search_view_definitions returns and renders matches', async () => {
+    const tool = tools()['sql_search_view_definitions']
+    const result = await tool.execute({ pattern: 'active' }, exec())
+    expect(result).toEqual({
+      matches: [{ schema: 'public', name: 'active_users', definition: 'SELECT * FROM users WHERE active' }],
+    })
+    const blocks = (tool.output as { render: (a: unknown, v: any) => unknown }).render({ pattern: 'active' }, {
+      matches: [{ schema: 'public', name: 'active_users', definition: 'SELECT * FROM users WHERE active' }],
+    })
+    expect(JSON.stringify(blocks)).toContain('active_users')
+  })
+
+  it('sql_search_routine_definitions returns and renders matches', async () => {
+    const tool = tools()['sql_search_routine_definitions']
+    const result = await tool.execute({ pattern: 'get' }, exec())
+    expect(result).toEqual({
+      matches: [{
+        schema: 'public',
+        name: 'get_orders',
+        kind: 'function',
+        arguments: 'customer_id integer',
+        language: 'sql',
+        source: 'CREATE FUNCTION public.get_orders(customer_id integer) RETURNS SETOF orders AS ...',
+      }],
+    })
+    const blocks = (tool.output as { render: (a: unknown, v: any) => unknown }).render({ pattern: 'get' }, {
+      matches: [{
+        schema: 'public',
+        name: 'get_orders',
+        kind: 'function',
+        arguments: 'customer_id integer',
+        language: 'sql',
+        source: 'CREATE FUNCTION ...',
+      }],
+    })
+    expect(JSON.stringify(blocks)).toContain('get_orders')
+    expect(JSON.stringify(blocks)).toContain('function')
+  })
+
+  it('sql_search_trigger_definitions returns and renders matches', async () => {
+    const tool = tools()['sql_search_trigger_definitions']
+    const result = await tool.execute({ pattern: 'trg' }, exec())
+    expect(result).toEqual({
+      matches: [{
+        schema: 'public',
+        table: 'users',
+        name: 'trg',
+        timing: 'AFTER',
+        event: 'INSERT',
+        definition: 'CREATE TRIGGER trg AFTER INSERT ON users FOR EACH ROW EXECUTE FUNCTION audit_row()',
+      }],
+    })
+    const blocks = (tool.output as { render: (a: unknown, v: any) => unknown }).render({ pattern: 'trg' }, {
+      matches: [{ schema: 'public', table: 'users', name: 'trg', timing: 'AFTER', event: 'INSERT', definition: 'CREATE TRIGGER ...' }],
+    })
+    const text = JSON.stringify(blocks)
+    expect(text).toContain('users')
+    expect(text).toContain('AFTER')
+  })
+
+  it('sql_search_constraint_definitions returns and renders matches', async () => {
+    const tool = tools()['sql_search_constraint_definitions']
+    const result = await tool.execute({ pattern: 'age' }, exec())
+    expect(result).toEqual({
+      matches: [{
+        schema: 'public',
+        table: 'users',
+        name: 'users_age_check',
+        type: 'CHECK',
+        definition: 'CHECK ((age >= 0))',
+        simplified: false,
+      }],
+    })
+    const blocks = (tool.output as { render: (a: unknown, v: any) => unknown }).render({ pattern: 'age' }, {
+      matches: [{
+        schema: 'public',
+        table: 'users',
+        name: 'users_age_check',
+        type: 'CHECK',
+        definition: 'CHECK ((age >= 0))',
+        simplified: true,
+      }],
+    })
+    const text = JSON.stringify(blocks)
+    expect(text).toContain('CHECK')
+    expect(text).toContain('generated')
+  })
+
+  it('sql_search_table_ddl returns and renders matches', async () => {
+    const tool = tools()['sql_search_table_ddl']
+    const result = await tool.execute({ pattern: 'user' }, exec())
+    expect(result).toEqual({
+      matches: [{ schema: 'public', table: 'users', definition: 'CREATE TABLE users (id integer);', simplified: true }],
+    })
+    const blocks = (tool.output as { render: (a: unknown, v: any) => unknown }).render({ pattern: 'user' }, {
+      matches: [{ schema: 'public', table: 'users', definition: 'CREATE TABLE users (id integer);', simplified: true }],
+    })
+    expect(JSON.stringify(blocks)).toContain('CREATE TABLE users')
+  })
 })
 
 describe('tool presentation (pure render intents)', () => {
@@ -1142,5 +1293,35 @@ describe('tool presentation (pure render intents)', () => {
     expect(t.presentCall(args)).toMatchObject({ card: 'generic', kind: 'read', title: 'Last access: users' })
     expect(t.presentResult(args, { table: 'users', supported: true })).toMatchObject({ title: 'Access: users' })
     expect(t.presentResult(args, { table: 'users', supported: false })).toMatchObject({ title: 'Not supported' })
+  })
+
+  it('sql_search_view_definitions pending and result cards', () => {
+    const t = defs()['sql_search_view_definitions'] as any
+    expect(t.presentCall({ pattern: 'active' })).toMatchObject({ card: 'generic', kind: 'search', title: 'Search view definitions: active' })
+    expect(t.presentResult({ pattern: 'active' }, { matches: [{}] })).toMatchObject({ title: '1 view definition(s)' })
+  })
+
+  it('sql_search_routine_definitions pending and result cards', () => {
+    const t = defs()['sql_search_routine_definitions'] as any
+    expect(t.presentCall({ pattern: 'get' })).toMatchObject({ card: 'generic', kind: 'search', title: 'Search routine definitions: get' })
+    expect(t.presentResult({ pattern: 'get' }, { matches: [{}, {}] })).toMatchObject({ title: '2 routine definition(s)' })
+  })
+
+  it('sql_search_trigger_definitions pending and result cards', () => {
+    const t = defs()['sql_search_trigger_definitions'] as any
+    expect(t.presentCall({ pattern: 'trg' })).toMatchObject({ card: 'generic', kind: 'search', title: 'Search trigger definitions: trg' })
+    expect(t.presentResult({ pattern: 'trg' }, { matches: [{}] })).toMatchObject({ title: '1 trigger definition(s)' })
+  })
+
+  it('sql_search_constraint_definitions pending and result cards', () => {
+    const t = defs()['sql_search_constraint_definitions'] as any
+    expect(t.presentCall({ pattern: 'age' })).toMatchObject({ card: 'generic', kind: 'search', title: 'Search constraint definitions: age' })
+    expect(t.presentResult({ pattern: 'age' }, { matches: [{}] })).toMatchObject({ title: '1 constraint definition(s)' })
+  })
+
+  it('sql_search_table_ddl pending and result cards', () => {
+    const t = defs()['sql_search_table_ddl'] as any
+    expect(t.presentCall({ pattern: 'user' })).toMatchObject({ card: 'generic', kind: 'search', title: 'Search table DDL: user' })
+    expect(t.presentResult({ pattern: 'user' }, { matches: [{}] })).toMatchObject({ title: '1 table DDL(s)' })
   })
 })

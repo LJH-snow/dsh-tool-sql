@@ -160,6 +160,42 @@ function mockDriver(overrides: Partial<Driver> = {}): Driver {
       seqScans: 3,
       indexScans: 40,
     })),
+    searchViewDefinitions: vi.fn(async () => [
+      { schema: 'public', name: 'active_users', definition: 'SELECT * FROM users WHERE active' },
+    ]),
+    searchRoutineDefinitions: vi.fn(async () => [
+      {
+        schema: 'public',
+        name: 'get_orders',
+        kind: 'function',
+        arguments: 'customer_id integer',
+        language: 'sql',
+        source: 'CREATE FUNCTION public.get_orders(customer_id integer) RETURNS SETOF orders AS ...',
+      },
+    ]),
+    searchTriggerDefinitions: vi.fn(async () => [
+      {
+        schema: 'public',
+        table: 'users',
+        name: 'trg',
+        timing: 'AFTER',
+        event: 'INSERT',
+        definition: 'CREATE TRIGGER trg AFTER INSERT ON users FOR EACH ROW EXECUTE FUNCTION audit_row()',
+      },
+    ]),
+    searchConstraintDefinitions: vi.fn(async () => [
+      {
+        schema: 'public',
+        table: 'users',
+        name: 'users_age_check',
+        type: 'CHECK',
+        definition: 'CHECK ((age >= 0))',
+        simplified: false,
+      },
+    ]),
+    searchTableDefinitions: vi.fn(async () => [
+      { schema: 'public', table: 'users', definition: 'CREATE TABLE users (id integer);', simplified: true },
+    ]),
     close: vi.fn(async () => {}),
     ...overrides,
   }
@@ -533,5 +569,59 @@ describe('DbClient v0.2 methods', () => {
     const driver = mockDriver({ listLocks: vi.fn(async () => { throw new Error('lock view unavailable') }) })
     const client = makeClient(driver)
     await expect(client.listLocks()).rejects.toMatchObject({ kind: 'query', message: 'lock view unavailable' })
+  })
+
+  it('v0.11 definition search methods return object definition matches', async () => {
+    const client = makeClient(mockDriver())
+    expect(await client.searchViewDefinitions('active')).toEqual([
+      { schema: 'public', name: 'active_users', definition: 'SELECT * FROM users WHERE active' },
+    ])
+    expect(await client.searchRoutineDefinitions('get')).toMatchObject([
+      { schema: 'public', name: 'get_orders', kind: 'function', source: expect.stringContaining('CREATE FUNCTION') },
+    ])
+    expect(await client.searchTriggerDefinitions('trg')).toEqual([
+      {
+        schema: 'public',
+        table: 'users',
+        name: 'trg',
+        timing: 'AFTER',
+        event: 'INSERT',
+        definition: 'CREATE TRIGGER trg AFTER INSERT ON users FOR EACH ROW EXECUTE FUNCTION audit_row()',
+      },
+    ])
+    expect(await client.searchConstraintDefinitions('age')).toEqual([
+      {
+        schema: 'public',
+        table: 'users',
+        name: 'users_age_check',
+        type: 'CHECK',
+        definition: 'CHECK ((age >= 0))',
+        simplified: false,
+      },
+    ])
+    expect(await client.searchTableDefinitions('user')).toEqual([
+      { schema: 'public', table: 'users', definition: 'CREATE TABLE users (id integer);', simplified: true },
+    ])
+  })
+
+  it('v0.11 definition search methods normalize bare patterns and pass through wildcards', async () => {
+    const driver = mockDriver()
+    const client = makeClient(driver)
+    await client.searchViewDefinitions('active')
+    expect(driver.searchViewDefinitions).toHaveBeenCalledWith('%active%', expect.anything())
+    await client.searchRoutineDefinitions('%INSERT%')
+    expect(driver.searchRoutineDefinitions).toHaveBeenCalledWith('%INSERT%', expect.anything())
+    await client.searchTriggerDefinitions('_audit')
+    expect(driver.searchTriggerDefinitions).toHaveBeenCalledWith('%_audit%', expect.anything())
+    await client.searchConstraintDefinitions('age')
+    expect(driver.searchConstraintDefinitions).toHaveBeenCalledWith('%age%', expect.anything())
+    await client.searchTableDefinitions('%_2026%')
+    expect(driver.searchTableDefinitions).toHaveBeenCalledWith('%_2026%', expect.anything())
+  })
+
+  it('maps driver errors from v0.11 definition search methods to SqlError', async () => {
+    const driver = mockDriver({ searchTableDefinitions: vi.fn(async () => { throw new Error('catalog unavailable') }) })
+    const client = makeClient(driver)
+    await expect(client.searchTableDefinitions('users')).rejects.toMatchObject({ kind: 'query', message: 'catalog unavailable' })
   })
 })

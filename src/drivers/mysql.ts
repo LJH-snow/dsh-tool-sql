@@ -1,4 +1,4 @@
-import type { Driver, DbConfig, ColumnInfo, IndexInfo, DatabaseInfo, TableStat, ColumnMatch, ViewInfo, TableSize, SchemaInfo, FunctionInfo, TriggerInfo, ForeignKeyInfo, SchemaDump, ExtensionInfo, SequenceInfo, ConstraintInfo, DatabaseItem, RoleInfo, GrantInfo, MaterializedViewInfo, PartitionInfo, TableRowCount, TableMatch, DatabaseSize, TableSizeItem, TableCommentInfo, ColumnStats, FunctionSourceInfo, EnumTypeInfo, TableHealth, ActiveQueryInfo, RoutineMatchInfo, IndexMatchInfo, IndexUsageInfo, LockInfo, TableAccessInfo } from '../client.js'
+import type { Driver, DbConfig, ColumnInfo, IndexInfo, DatabaseInfo, TableStat, ColumnMatch, ViewInfo, TableSize, SchemaInfo, FunctionInfo, TriggerInfo, ForeignKeyInfo, SchemaDump, ExtensionInfo, SequenceInfo, ConstraintInfo, DatabaseItem, RoleInfo, GrantInfo, MaterializedViewInfo, PartitionInfo, TableRowCount, TableMatch, DatabaseSize, TableSizeItem, TableCommentInfo, ColumnStats, FunctionSourceInfo, EnumTypeInfo, TableHealth, ActiveQueryInfo, RoutineMatchInfo, IndexMatchInfo, IndexUsageInfo, LockInfo, TableAccessInfo, ViewDefinitionMatchInfo, RoutineDefinitionMatchInfo, TriggerDefinitionMatchInfo, ConstraintDefinitionMatchInfo, TableDefinitionMatchInfo } from '../client.js'
 import { assertSafeIdentifier } from '../client.js'
 
 export async function createMysqlDriver(config: DbConfig): Promise<Driver> {
@@ -21,6 +21,17 @@ export async function createMysqlDriver(config: DbConfig): Promise<Driver> {
     const ddlKey = Object.keys(row).find(k => k.toLowerCase() === 'create table')
     const ddl = ddlKey ? row[ddlKey] : ''
     return { table, ddl, simplified: false }
+  }
+
+  async function getRoutineCreate(name: string, kind: 'FUNCTION' | 'PROCEDURE'): Promise<string> {
+    const quoted = name.replace(/`/g, '``')
+    const [sourceRows] = await conn.query(
+      kind === 'PROCEDURE' ? `SHOW CREATE PROCEDURE \`${quoted}\`` : `SHOW CREATE FUNCTION \`${quoted}\``,
+    )
+    const sourceList = sourceRows as Array<Record<string, unknown>>
+    const row = sourceList[0] ?? {}
+    const key = Object.keys(row).find(k => /^create (function|procedure)$/i.test(k))
+    return key ? String(row[key] ?? '') : ''
   }
 
   return {
@@ -537,21 +548,12 @@ export async function createMysqlDriver(config: DbConfig): Promise<Driver> {
       if (routines.length === 0) throw new Error(`Function "${name}" not found.`)
       const result: FunctionSourceInfo[] = []
       for (const routine of routines) {
-        const quoted = routine.name.replace(/`/g, '``')
-        const [sourceRows] = await conn.query(
-          routine.kind === 'PROCEDURE'
-            ? `SHOW CREATE PROCEDURE \`${quoted}\``
-            : `SHOW CREATE FUNCTION \`${quoted}\``,
-        )
-        const sourceList = sourceRows as Array<Record<string, unknown>>
-        const row = sourceList[0] ?? {}
-        const key = Object.keys(row).find(k => /^create (function|procedure)$/i.test(k))
         result.push({
           name: routine.name,
           kind: routine.kind.toLowerCase() as FunctionSourceInfo['kind'],
           arguments: '',
           language: routine.language ?? null,
-          source: key ? String(row[key] ?? '') : '',
+          source: await getRoutineCreate(routine.name, routine.kind),
         })
       }
       return result
@@ -701,6 +703,159 @@ export async function createMysqlDriver(config: DbConfig): Promise<Driver> {
         seqScans: null,
         indexScans: null,
       } as TableAccessInfo
+    },
+    async searchViewDefinitions(pattern) {
+      const [rows] = await conn.query(
+        `SELECT TABLE_SCHEMA AS schema_name, TABLE_NAME AS name, VIEW_DEFINITION AS definition
+         FROM information_schema.views
+         WHERE TABLE_SCHEMA = DATABASE() AND (TABLE_NAME LIKE ? OR VIEW_DEFINITION LIKE ?)
+         ORDER BY TABLE_NAME
+         LIMIT 100`,
+        [pattern, pattern],
+      )
+      const list = rows as Array<{ schema_name: string; name: string; definition: string | null }>
+      return list.map<ViewDefinitionMatchInfo>(r => ({
+        schema: r.schema_name,
+        name: r.name,
+        definition: r.definition,
+      }))
+    },
+    async searchRoutineDefinitions(pattern) {
+      const [rows] = await conn.query(
+        `SELECT ROUTINE_SCHEMA AS schema_name, ROUTINE_NAME AS name, ROUTINE_TYPE AS kind,
+                EXTERNAL_LANGUAGE AS language, ROUTINE_DEFINITION AS definition
+         FROM information_schema.routines
+         WHERE ROUTINE_SCHEMA = DATABASE() AND (ROUTINE_NAME LIKE ? OR ROUTINE_DEFINITION LIKE ?)
+         ORDER BY ROUTINE_NAME, ROUTINE_TYPE
+         LIMIT 100`,
+        [pattern, pattern],
+      )
+      const list = rows as Array<{
+        schema_name: string
+        name: string
+        kind: 'FUNCTION' | 'PROCEDURE'
+        language: string | null
+      }>
+      const results: RoutineDefinitionMatchInfo[] = []
+      for (const routine of list) {
+        results.push({
+          schema: routine.schema_name,
+          name: routine.name,
+          kind: routine.kind.toLowerCase() as RoutineDefinitionMatchInfo['kind'],
+          arguments: '',
+          language: routine.language ?? null,
+          source: await getRoutineCreate(routine.name, routine.kind),
+        })
+      }
+      return results
+    },
+    async searchTriggerDefinitions(pattern) {
+      const [rows] = await conn.query(
+        `SELECT TRIGGER_SCHEMA AS schema_name, EVENT_OBJECT_TABLE AS table_name,
+                TRIGGER_NAME AS name, ACTION_TIMING AS timing,
+                EVENT_MANIPULATION AS event, ACTION_STATEMENT AS definition
+         FROM information_schema.triggers
+         WHERE TRIGGER_SCHEMA = DATABASE()
+           AND (TRIGGER_NAME LIKE ? OR EVENT_OBJECT_TABLE LIKE ? OR ACTION_STATEMENT LIKE ?)
+         ORDER BY EVENT_OBJECT_TABLE, TRIGGER_NAME
+         LIMIT 100`,
+        [pattern, pattern, pattern],
+      )
+      const list = rows as Array<{
+        schema_name: string
+        table_name: string
+        name: string
+        timing: string
+        event: string
+        definition: string
+      }>
+      return list.map<TriggerDefinitionMatchInfo>(r => ({
+        schema: r.schema_name,
+        table: r.table_name,
+        name: r.name,
+        timing: r.timing,
+        event: r.event,
+        definition: r.definition ?? null,
+      }))
+    },
+    async searchConstraintDefinitions(pattern) {
+      const [rows] = await conn.query(
+        `SELECT tc.CONSTRAINT_SCHEMA AS schema_name, tc.TABLE_NAME AS table_name,
+                tc.CONSTRAINT_NAME AS name, tc.CONSTRAINT_TYPE AS type,
+                kcu.COLUMN_NAME AS column_name, cc.CHECK_CLAUSE AS check_clause
+         FROM information_schema.table_constraints tc
+         LEFT JOIN information_schema.key_column_usage kcu
+           ON tc.CONSTRAINT_SCHEMA = kcu.CONSTRAINT_SCHEMA
+          AND tc.TABLE_NAME = kcu.TABLE_NAME
+          AND tc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME
+         LEFT JOIN information_schema.check_constraints cc
+           ON tc.CONSTRAINT_SCHEMA = cc.CONSTRAINT_SCHEMA
+          AND tc.CONSTRAINT_NAME = cc.CONSTRAINT_NAME
+         WHERE tc.TABLE_SCHEMA = DATABASE()
+           AND tc.CONSTRAINT_TYPE IN ('PRIMARY KEY', 'UNIQUE', 'CHECK')
+           AND (tc.CONSTRAINT_NAME LIKE ? OR COALESCE(cc.CHECK_CLAUSE, '') LIKE ?)
+         ORDER BY tc.TABLE_NAME, tc.CONSTRAINT_NAME, kcu.ORDINAL_POSITION
+         LIMIT 100`,
+        [pattern, pattern],
+      )
+      const list = rows as Array<{
+        schema_name: string
+        table_name: string
+        name: string
+        type: string
+        column_name: string | null
+        check_clause: string | null
+      }>
+      const constraints = new Map<string, {
+        schema: string
+        table: string
+        name: string
+        type: ConstraintDefinitionMatchInfo['type']
+        columns: string[]
+      }>()
+      const checkClauses = new Map<string, string | null>()
+      for (const row of list) {
+        const key = `${row.schema_name}.${row.table_name}.${row.name}`
+        let info = constraints.get(key)
+        if (!info) {
+          info = {
+            schema: row.schema_name,
+            table: row.table_name,
+            name: row.name,
+            type: row.type as ConstraintDefinitionMatchInfo['type'],
+            columns: [],
+          }
+          constraints.set(key, info)
+        }
+        checkClauses.set(key, row.check_clause)
+        if (row.column_name) info.columns.push(row.column_name)
+      }
+      return [...constraints.values()].map<ConstraintDefinitionMatchInfo>(info => {
+        const checkClause = checkClauses.get(`${info.schema}.${info.table}.${info.name}`)
+        const definition = checkClause ?? `${info.type} (${info.columns.join(', ')})`
+        return {
+          ...info,
+          definition: definition || null,
+          simplified: checkClause === null || checkClause === undefined,
+        }
+      })
+    },
+    async searchTableDefinitions(pattern) {
+      const [rows] = await conn.query(
+        `SELECT TABLE_SCHEMA AS schema_name, TABLE_NAME AS table_name
+         FROM information_schema.tables
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = 'BASE TABLE' AND TABLE_NAME LIKE ?
+         ORDER BY TABLE_NAME
+         LIMIT 100`,
+        [pattern],
+      )
+      const list = rows as Array<{ schema_name: string; table_name: string }>
+      const matches: TableDefinitionMatchInfo[] = []
+      for (const row of list) {
+        const schema = await getSchemaFor(row.table_name)
+        matches.push({ schema: row.schema_name, table: row.table_name, definition: schema.ddl, simplified: false })
+      }
+      return matches
     },
     async close() {
       await conn.end()

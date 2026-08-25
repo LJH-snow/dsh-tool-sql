@@ -99,6 +99,11 @@ npm install /path/to/dsh-tool-sql
 | `sql_list_index_usage` | 列出 PostgreSQL 索引使用统计；MySQL 提示不支持 |
 | `sql_list_locks` | 列出连接可见的锁（PostgreSQL pg_locks；MySQL performance_schema） |
 | `sql_get_table_last_access` | 查看 PostgreSQL 表最近 seq/index scan 时间与次数；MySQL 提示不支持 |
+| `sql_search_view_definitions` | 按视图名或定义文本搜索视图并返回定义 |
+| `sql_search_routine_definitions` | 按函数/存储过程名称或源码文本搜索并返回完整定义 |
+| `sql_search_trigger_definitions` | 按触发器/表/动作文本搜索触发器并返回定义或动作语句 |
+| `sql_search_constraint_definitions` | 按名称或定义文本搜索主键/唯一/检查约束定义 |
+| `sql_search_table_ddl` | 按表名搜索并返回建表 DDL（PostgreSQL 简化生成；MySQL 服务器原样） |
 
 ## 开发
 

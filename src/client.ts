@@ -287,6 +287,46 @@ export interface TableAccessInfo {
   indexScans: number | null
 }
 
+export interface ViewDefinitionMatchInfo {
+  schema: string
+  name: string
+  definition: string | null
+}
+
+export interface RoutineDefinitionMatchInfo {
+  schema: string
+  name: string
+  kind: 'function' | 'procedure'
+  arguments: string
+  language: string | null
+  source: string | null
+}
+
+export interface TriggerDefinitionMatchInfo {
+  schema: string
+  table: string
+  name: string
+  timing: string
+  event: string
+  definition: string | null
+}
+
+export interface ConstraintDefinitionMatchInfo {
+  schema: string
+  table: string
+  name: string
+  type: 'PRIMARY KEY' | 'UNIQUE' | 'CHECK'
+  definition: string | null
+  simplified: boolean
+}
+
+export interface TableDefinitionMatchInfo {
+  schema: string
+  table: string
+  definition: string
+  simplified: boolean
+}
+
 /** SQL driver adapter; implementations live in drivers/* and are dynamically imported. */
 export interface Driver {
   query(sql: string, signal?: AbortSignal): Promise<{ columns: string[]; rows: Array<Record<string, unknown>> }>
@@ -329,6 +369,11 @@ export interface Driver {
   listIndexUsage(signal?: AbortSignal): Promise<IndexUsageInfo[]>
   listLocks(signal?: AbortSignal): Promise<LockInfo[]>
   getTableLastAccess(table: string, signal?: AbortSignal): Promise<TableAccessInfo>
+  searchViewDefinitions(pattern: string, signal?: AbortSignal): Promise<ViewDefinitionMatchInfo[]>
+  searchRoutineDefinitions(pattern: string, signal?: AbortSignal): Promise<RoutineDefinitionMatchInfo[]>
+  searchTriggerDefinitions(pattern: string, signal?: AbortSignal): Promise<TriggerDefinitionMatchInfo[]>
+  searchConstraintDefinitions(pattern: string, signal?: AbortSignal): Promise<ConstraintDefinitionMatchInfo[]>
+  searchTableDefinitions(pattern: string, signal?: AbortSignal): Promise<TableDefinitionMatchInfo[]>
   close(): Promise<void>
 }
 
@@ -822,6 +867,61 @@ export class DbClient {
     const driver = await this.getDriver()
     try {
       return await driver.getTableLastAccess(table, this.combinedSignal(signal))
+    } catch (error) {
+      if (error instanceof SqlError) throw error
+      throw new SqlError(error instanceof Error ? error.message : String(error), 'query')
+    }
+  }
+
+  async searchViewDefinitions(pattern: string, signal?: AbortSignal): Promise<ViewDefinitionMatchInfo[]> {
+    const driver = await this.getDriver()
+    try {
+      const normalized = pattern.includes('%') ? pattern : `%${pattern}%`
+      return await driver.searchViewDefinitions(normalized, this.combinedSignal(signal))
+    } catch (error) {
+      if (error instanceof SqlError) throw error
+      throw new SqlError(error instanceof Error ? error.message : String(error), 'query')
+    }
+  }
+
+  async searchRoutineDefinitions(pattern: string, signal?: AbortSignal): Promise<RoutineDefinitionMatchInfo[]> {
+    const driver = await this.getDriver()
+    try {
+      const normalized = pattern.includes('%') ? pattern : `%${pattern}%`
+      return await driver.searchRoutineDefinitions(normalized, this.combinedSignal(signal))
+    } catch (error) {
+      if (error instanceof SqlError) throw error
+      throw new SqlError(error instanceof Error ? error.message : String(error), 'query')
+    }
+  }
+
+  async searchTriggerDefinitions(pattern: string, signal?: AbortSignal): Promise<TriggerDefinitionMatchInfo[]> {
+    const driver = await this.getDriver()
+    try {
+      const normalized = pattern.includes('%') ? pattern : `%${pattern}%`
+      return await driver.searchTriggerDefinitions(normalized, this.combinedSignal(signal))
+    } catch (error) {
+      if (error instanceof SqlError) throw error
+      throw new SqlError(error instanceof Error ? error.message : String(error), 'query')
+    }
+  }
+
+  async searchConstraintDefinitions(pattern: string, signal?: AbortSignal): Promise<ConstraintDefinitionMatchInfo[]> {
+    const driver = await this.getDriver()
+    try {
+      const normalized = pattern.includes('%') ? pattern : `%${pattern}%`
+      return await driver.searchConstraintDefinitions(normalized, this.combinedSignal(signal))
+    } catch (error) {
+      if (error instanceof SqlError) throw error
+      throw new SqlError(error instanceof Error ? error.message : String(error), 'query')
+    }
+  }
+
+  async searchTableDefinitions(pattern: string, signal?: AbortSignal): Promise<TableDefinitionMatchInfo[]> {
+    const driver = await this.getDriver()
+    try {
+      const normalized = pattern.includes('%') ? pattern : `%${pattern}%`
+      return await driver.searchTableDefinitions(normalized, this.combinedSignal(signal))
     } catch (error) {
       if (error instanceof SqlError) throw error
       throw new SqlError(error instanceof Error ? error.message : String(error), 'query')

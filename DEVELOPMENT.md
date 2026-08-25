@@ -12,7 +12,7 @@
 | 架构 | 一切皆插件：`ctx.tools.register(defineTool(...))` 注册模型可见工具 |
 | 官方参考 | 与 `dsh-tool-github` 同模式（已验证的 defineTool 契约） |
 | 项目位置 | `deepseek-harness-pro/dsh-tool-sql/`（与 dsh-tool-github 平级） |
-| 状态 | v0.10 完成：42 工具 + 146 测试全绿，开发文档与代码同步 |
+| 状态 | v0.11 完成：47 工具 + 159 测试全绿，开发文档与代码同步 |
 
 ### 1.1 目标
 - 让 dsh Agent 能对 PostgreSQL / MySQL 执行**只读**查询：查数据、列表、看表结构。
@@ -122,6 +122,17 @@
 
 **不在范围（v0.10）**：写操作、终止锁/查询、执行 DDL、跨库查询。
 
+### 1.12 范围（v0.11，阶段 14）
+| 工具 | 功能 | 需凭据 |
+|---|---|---|
+| `sql_search_view_definitions` | 按视图名或定义文本搜索视图定义（PG：pg_views；MySQL：information_schema.views） | 是 |
+| `sql_search_routine_definitions` | 按例程名或源码/函数体文本搜索完整定义（PG：pg_get_functiondef/prosrc；MySQL：routines + SHOW CREATE） | 是 |
+| `sql_search_trigger_definitions` | 按触发器名/表/动作文本搜索定义（PG：pg_get_triggerdef；MySQL：information_schema.triggers） | 是 |
+| `sql_search_constraint_definitions` | 按约束名或定义文本搜索 PK/UNIQUE/CHECK（PG：pg_get_constraintdef；MySQL：CHECK_CLAUSE/列聚合） | 是 |
+| `sql_search_table_ddl` | 按表名搜索并返回建表 DDL（PG：catalog 简化；MySQL：SHOW CREATE TABLE） | 是 |
+
+**不在范围（v0.11）**：写操作、执行 DDL、跨库查询、导出完整 pg_dump。
+
 ## 2. 技术背景（契约要点，同 dsh-tool-github 已验证）
 
 - `defineTool` 契约：参数自动校验、输出规范 JSON 值、`exec.signal` 透传、`presentCall`/`presentResult` 纯函数。
@@ -203,6 +214,11 @@
 ### 阶段 13：v0.10 扩展（例程/索引检索、锁与访问统计）
 - [x] Driver 新增 `searchRoutines`/`searchIndexes`/`listIndexUsage`/`listLocks`/`getTableLastAccess` + PG/MySQL 实现
 - [x] 注册 5 个新工具：`sql_search_routines`/`sql_search_indexes`/`sql_list_index_usage`/`sql_list_locks`/`sql_get_table_last_access` + UI 呈现
+- [x] 验收：mock 单测；typecheck；build；README 双语更新 + 推送
+
+### 阶段 14：v0.11 扩展（对象定义检索）
+- [x] Driver 新增 `searchViewDefinitions`/`searchRoutineDefinitions`/`searchTriggerDefinitions`/`searchConstraintDefinitions`/`searchTableDefinitions` + PG/MySQL 实现
+- [x] 注册 5 个新工具：`sql_search_view_definitions`/`sql_search_routine_definitions`/`sql_search_trigger_definitions`/`sql_search_constraint_definitions`/`sql_search_table_ddl` + UI 呈现
 - [x] 验收：mock 单测；typecheck；build；README 双语更新 + 推送
 
 ## 4. 开发日志
@@ -331,6 +347,17 @@
 - 注册 5 个新工具：`sql_search_routines`/`sql_search_indexes`/`sql_list_index_usage`/`sql_list_locks`/`sql_get_table_last_access`（共 42 工具）。
 - 测试增至 146/146（client 46 + tools 100）；typecheck / build 全绿。
 
+### 2026-08-25（阶段 14 规划）
+- 规划 v0.11：对象定义检索五件套（视图/例程/触发器/约束/表 DDL），全部保持只读安全模型。
+- `sql_search_table_ddl` 在 PostgreSQL 仍使用 catalog 简化 DDL，不做 pg_dump 级完整导出。
+
+### 2026-08-25（阶段 14 实现）
+- Driver 接口新增 `searchViewDefinitions`/`searchRoutineDefinitions`/`searchTriggerDefinitions`/`searchConstraintDefinitions`/`searchTableDefinitions`，PG/MySQL 双驱动实现。
+  - PG 视图定义：`pg_views` 按视图名/definition 搜索；例程源码：`pg_get_functiondef` + `prosrc` 搜索；触发器：`pg_get_triggerdef`；约束：`pg_get_constraintdef`；表 DDL：复用 catalog 生成简化 `CREATE TABLE`。
+  - MySQL 视图定义：`information_schema.views`；例程源码：`information_schema.routines` + `SHOW CREATE FUNCTION/PROCEDURE`；触发器：`information_schema.triggers`；约束：`CHECK_CLAUSE`，PK/UNIQUE 从 catalog 列聚合为简化定义；表 DDL：`SHOW CREATE TABLE`。
+- 注册 5 个新工具：`sql_search_view_definitions`/`sql_search_routine_definitions`/`sql_search_trigger_definitions`/`sql_search_constraint_definitions`/`sql_search_table_ddl`（共 47 工具）。
+- 测试增至 159/159（client 49 + tools 110）；typecheck / build 全绿。
+
 ## 5. 风险与决策记录
 
 | 时间 | 决策/风险 | 说明 |
@@ -356,4 +383,9 @@
 | 2026-08-25 | 活动查询包含 SQL 文本 | 面向诊断场景保留完整文本，但不在 UI render 中铺满长查询（截断到 200 字符预览） |
 | 2026-08-25 | MySQL 锁诊断依赖 performance_schema | `sql_list_locks` 使用 `performance_schema.data_locks`；旧版本或无权限会按查询错误返回，不编造数据 |
 | 2026-08-25 | 索引使用/表访问统计仅 PostgreSQL | 两个工具在 MySQL 返回 `supported: false`，避免把 information_schema 近似值当作真实统计 |
+| 2026-08-25 | 定义检索匹配库暴露的正文 | PG 例程搜索 `prosrc`、MySQL 搜索 `ROUTINE_DEFINITION`/`ACTION_STATEMENT`，不承诺匹配所有 CREATE 头部文本 |
+| 2026-08-25 | PG 表 DDL 仍为简化生成 | `sql_search_table_ddl` 复用 catalog 生成并标注 simplified；需要完整 pg_dump 语义的使用专用导出 |
+| 2026-08-25 | MySQL SHOW CREATE 需要对象权限 | 例程/表定义搜索执行 `SHOW CREATE`，权限不足按查询错误返回，不编造源码 |
+| 2026-08-25 | MySQL PK/UNIQUE 定义为列聚合 | information_schema 不提供完整定义，工具返回简化定义并标 `simplified: true` |
+| 2026-08-25 | 表/例程定义搜索可能执行多轮 SHOW CREATE | 最多返回 100 条匹配对象，列表较大时可能较慢；保持只读 |
 | 2026-08-14 | 风险：npm 发布受 2FA 限制 | 同 dsh-tool-github，先 GitHub 安装方式 |
