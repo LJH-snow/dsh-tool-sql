@@ -104,6 +104,11 @@ Full example: [examples/cordis.yml](examples/cordis.yml).
 | `sql_search_trigger_definitions` | Search triggers by trigger/table/action text and return definitions or action statements |
 | `sql_search_constraint_definitions` | Search PK/UNIQUE/CHECK constraint definitions by name or definition text |
 | `sql_search_table_ddl` | Search tables by name and return CREATE TABLE DDL (PostgreSQL simplified; MySQL server output) |
+| `sql_get_table_dependencies` | Find objects referencing a table: views/materialized views, routines, triggers, and incoming foreign keys |
+| `sql_get_view_dependencies` | Show tables, views, and routines used by a view |
+| `sql_get_routine_dependencies` | Show tables, views, and routines referenced inside a function/procedure source |
+| `sql_get_routine_references` | Find functions/procedures whose source text references an object (drop/rename impact) |
+| `sql_get_trigger_dependencies` | Show the table and fired routine(s) used by a trigger |
 
 ## Development
 

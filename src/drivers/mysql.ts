@@ -1,4 +1,4 @@
-import type { Driver, DbConfig, ColumnInfo, IndexInfo, DatabaseInfo, TableStat, ColumnMatch, ViewInfo, TableSize, SchemaInfo, FunctionInfo, TriggerInfo, ForeignKeyInfo, SchemaDump, ExtensionInfo, SequenceInfo, ConstraintInfo, DatabaseItem, RoleInfo, GrantInfo, MaterializedViewInfo, PartitionInfo, TableRowCount, TableMatch, DatabaseSize, TableSizeItem, TableCommentInfo, ColumnStats, FunctionSourceInfo, EnumTypeInfo, TableHealth, ActiveQueryInfo, RoutineMatchInfo, IndexMatchInfo, IndexUsageInfo, LockInfo, TableAccessInfo, ViewDefinitionMatchInfo, RoutineDefinitionMatchInfo, TriggerDefinitionMatchInfo, ConstraintDefinitionMatchInfo, TableDefinitionMatchInfo } from '../client.js'
+import type { Driver, DbConfig, ColumnInfo, IndexInfo, DatabaseInfo, TableStat, ColumnMatch, ViewInfo, TableSize, SchemaInfo, FunctionInfo, TriggerInfo, ForeignKeyInfo, SchemaDump, ExtensionInfo, SequenceInfo, ConstraintInfo, DatabaseItem, RoleInfo, GrantInfo, MaterializedViewInfo, PartitionInfo, TableRowCount, TableMatch, DatabaseSize, TableSizeItem, TableCommentInfo, ColumnStats, FunctionSourceInfo, EnumTypeInfo, TableHealth, ActiveQueryInfo, RoutineMatchInfo, IndexMatchInfo, IndexUsageInfo, LockInfo, TableAccessInfo, ViewDefinitionMatchInfo, RoutineDefinitionMatchInfo, TriggerDefinitionMatchInfo, ConstraintDefinitionMatchInfo, TableDefinitionMatchInfo, DependencyReference, TableDependenciesInfo, ViewDependenciesInfo, RoutineDependenciesInfo, RoutineReferencesInfo, RoutineReferenceInfo, TriggerDependenciesInfo } from '../client.js'
 import { assertSafeIdentifier } from '../client.js'
 
 export async function createMysqlDriver(config: DbConfig): Promise<Driver> {
@@ -32,6 +32,27 @@ export async function createMysqlDriver(config: DbConfig): Promise<Driver> {
     const row = sourceList[0] ?? {}
     const key = Object.keys(row).find(k => /^create (function|procedure)$/i.test(k))
     return key ? String(row[key] ?? '') : ''
+  }
+
+  async function queryOrNull<T>(sql: string, params?: unknown[]): Promise<T[] | null> {
+    try {
+      const [rows] = await conn.query(sql, params)
+      return rows as T[]
+    } catch {
+      return null
+    }
+  }
+
+  function sourceSnippet(source: string, needle: string): string | null {
+    const index = source.toLowerCase().indexOf(needle.toLowerCase())
+    if (index < 0) return null
+    return source.slice(Math.max(0, index - 40), index + needle.length + 80).replace(/\s+/g, ' ').trim()
+  }
+
+  function addDependency(dependencies: DependencyReference[], item: DependencyReference): void {
+    if (!dependencies.some(d => d.kind === item.kind && d.name === item.name && d.detail === item.detail)) {
+      dependencies.push(item)
+    }
   }
 
   return {
@@ -856,6 +877,330 @@ export async function createMysqlDriver(config: DbConfig): Promise<Driver> {
         matches.push({ schema: row.schema_name, table: row.table_name, definition: schema.ddl, simplified: false })
       }
       return matches
+    },
+    async getTableDependencies(table) {
+      const dependencies: DependencyReference[] = []
+      const views = await queryOrNull<{ view_name: string }>(
+        `SELECT DISTINCT VIEW_NAME AS view_name
+         FROM information_schema.VIEW_TABLE_USAGE
+         WHERE VIEW_SCHEMA = DATABASE() AND TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?
+         ORDER BY VIEW_NAME`,
+        [table],
+      )
+      if (views) {
+        for (const row of views) {
+          addDependency(dependencies, { kind: 'view', name: row.view_name, detail: null, source: 'catalog' })
+        }
+      } else {
+        const [rows] = await conn.query(
+          `SELECT TABLE_NAME AS name
+           FROM information_schema.views
+           WHERE TABLE_SCHEMA = DATABASE() AND VIEW_DEFINITION LIKE ?
+           ORDER BY TABLE_NAME`,
+          [`%${table}%`],
+        )
+        const list = rows as Array<{ name: string }>
+        for (const row of list) {
+          addDependency(dependencies, { kind: 'view', name: row.name, detail: null, source: 'definition text' })
+        }
+      }
+      const routines = await queryOrNull<{ routine_name: string }>(
+        `SELECT DISTINCT ROUTINE_NAME AS routine_name
+         FROM information_schema.ROUTINE_TABLE_USAGE
+         WHERE ROUTINE_SCHEMA = DATABASE() AND TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?
+         ORDER BY ROUTINE_NAME`,
+        [table],
+      )
+      if (routines) {
+        for (const row of routines) {
+          addDependency(dependencies, { kind: 'routine', name: row.routine_name, detail: null, source: 'catalog' })
+        }
+      } else {
+        const [rows] = await conn.query(
+          `SELECT ROUTINE_NAME AS name
+           FROM information_schema.routines
+           WHERE ROUTINE_SCHEMA = DATABASE() AND ROUTINE_DEFINITION LIKE ?
+           ORDER BY ROUTINE_NAME`,
+          [`%${table}%`],
+        )
+        const list = rows as Array<{ name: string }>
+        for (const row of list) {
+          addDependency(dependencies, { kind: 'routine', name: row.name, detail: null, source: 'definition text' })
+        }
+      }
+      const [triggerRows] = await conn.query(
+        `SELECT TRIGGER_NAME AS name
+         FROM information_schema.triggers
+         WHERE TRIGGER_SCHEMA = DATABASE() AND EVENT_OBJECT_TABLE = ?
+         ORDER BY TRIGGER_NAME`,
+        [table],
+      )
+      for (const row of triggerRows as Array<{ name: string }>) {
+        addDependency(dependencies, { kind: 'trigger', name: row.name, detail: null, source: 'catalog' })
+      }
+      const [fkRows] = await conn.query(
+        `SELECT CONSTRAINT_NAME AS name, TABLE_NAME AS table_name, COLUMN_NAME AS column_name,
+                REFERENCED_TABLE_NAME AS referenced_table, REFERENCED_COLUMN_NAME AS referenced_column
+         FROM information_schema.key_column_usage
+         WHERE TABLE_SCHEMA = DATABASE() AND REFERENCED_TABLE_SCHEMA = DATABASE()
+           AND REFERENCED_TABLE_NAME = ?
+         ORDER BY TABLE_NAME, ORDINAL_POSITION`,
+        [table],
+      )
+      for (const row of fkRows as Array<{
+        name: string
+        table_name: string
+        column_name: string
+        referenced_table: string
+        referenced_column: string
+      }>) {
+        addDependency(dependencies, {
+          kind: 'foreign key',
+          name: row.name,
+          detail: `${row.table_name}.${row.column_name} -> ${row.referenced_table}.${row.referenced_column}`,
+          source: 'catalog',
+        })
+      }
+      return { table, dependencies } as TableDependenciesInfo
+    },
+    async getViewDependencies(view) {
+      const dependencies: DependencyReference[] = []
+      let definition: string | null = null
+      const usage = await queryOrNull<{ name: string; kind: string }>(
+        `SELECT v.TABLE_NAME AS name,
+                IF(t.TABLE_TYPE = 'VIEW', 'view', 'table') AS kind
+         FROM information_schema.VIEW_TABLE_USAGE v
+         LEFT JOIN information_schema.tables t
+           ON t.TABLE_SCHEMA = v.TABLE_SCHEMA AND t.TABLE_NAME = v.TABLE_NAME
+         WHERE v.VIEW_SCHEMA = DATABASE() AND v.VIEW_NAME = ? AND v.TABLE_SCHEMA = DATABASE()
+         ORDER BY v.TABLE_NAME`,
+        [view],
+      )
+      if (usage) {
+        for (const row of usage) {
+          addDependency(dependencies, {
+            kind: row.kind as DependencyReference['kind'],
+            name: row.name,
+            detail: null,
+            source: 'catalog',
+          })
+        }
+      } else {
+        const [viewRows] = await conn.query(
+          `SELECT VIEW_DEFINITION AS definition
+           FROM information_schema.views
+           WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?`,
+          [view],
+        )
+        definition = (viewRows as Array<{ definition: string | null }>)[0]?.definition ?? null
+        if (definition) {
+          const [rows] = await conn.query(
+            `SELECT TABLE_NAME AS name, IF(TABLE_TYPE = 'VIEW', 'view', 'table') AS kind
+             FROM information_schema.tables
+             WHERE TABLE_SCHEMA = DATABASE()
+             ORDER BY TABLE_NAME`,
+          )
+          for (const row of rows as Array<{ name: string; kind: string }>) {
+            if (definition.toLowerCase().includes(row.name.toLowerCase())) {
+              addDependency(dependencies, {
+                kind: row.kind as DependencyReference['kind'],
+                name: row.name,
+                detail: sourceSnippet(definition, row.name),
+                source: 'definition text',
+              })
+            }
+          }
+        }
+      }
+      const routines = await queryOrNull<{ name: string }>(
+        `SELECT ROUTINE_NAME AS name
+         FROM information_schema.VIEW_ROUTINE_USAGE
+         WHERE VIEW_SCHEMA = DATABASE() AND VIEW_NAME = ?
+         ORDER BY ROUTINE_NAME`,
+        [view],
+      )
+      if (routines) {
+        for (const row of routines) {
+          addDependency(dependencies, { kind: 'routine', name: row.name, detail: null, source: 'catalog' })
+        }
+      } else if (definition) {
+        const [rows] = await conn.query(
+          `SELECT ROUTINE_NAME AS name
+           FROM information_schema.routines
+           WHERE ROUTINE_SCHEMA = DATABASE()
+           ORDER BY ROUTINE_NAME`,
+        )
+        for (const row of rows as Array<{ name: string }>) {
+          if (definition.toLowerCase().includes(row.name.toLowerCase())) {
+            addDependency(dependencies, {
+              kind: 'routine',
+              name: row.name,
+              detail: sourceSnippet(definition, row.name),
+              source: 'definition text',
+            })
+          }
+        }
+      }
+      return { view, dependencies } as ViewDependenciesInfo
+    },
+    async getRoutineDependencies(name) {
+      const [routineRows] = await conn.query(
+        `SELECT ROUTINE_NAME AS name, ROUTINE_TYPE AS kind, ROUTINE_DEFINITION AS definition
+         FROM information_schema.routines
+         WHERE ROUTINE_SCHEMA = DATABASE() AND ROUTINE_NAME = ?
+         ORDER BY ROUTINE_TYPE`,
+        [name],
+      )
+      const routines = routineRows as Array<{ name: string; kind: string; definition: string | null }>
+      if (routines.length === 0) throw new Error(`Routine "${name}" not found.`)
+      const sourceText = routines.map(r => r.definition ?? '').join('\n')
+      const dependencies: DependencyReference[] = []
+      const tableUsage = await queryOrNull<{ table_name: string; kind: string }>(
+        `SELECT DISTINCT r.TABLE_NAME AS table_name,
+                IF(t.TABLE_TYPE = 'VIEW', 'view', 'table') AS kind
+         FROM information_schema.ROUTINE_TABLE_USAGE r
+         LEFT JOIN information_schema.tables t
+           ON t.TABLE_SCHEMA = r.TABLE_SCHEMA AND t.TABLE_NAME = r.TABLE_NAME
+         WHERE r.ROUTINE_SCHEMA = DATABASE() AND r.ROUTINE_NAME = ? AND r.TABLE_SCHEMA = DATABASE()
+         ORDER BY r.TABLE_NAME`,
+        [name],
+      )
+      if (tableUsage) {
+        for (const row of tableUsage) {
+          addDependency(dependencies, {
+            kind: row.kind as DependencyReference['kind'],
+            name: row.table_name,
+            detail: null,
+            source: 'catalog',
+          })
+        }
+      } else {
+        const [rows] = await conn.query(
+          `SELECT TABLE_NAME AS name, IF(TABLE_TYPE = 'VIEW', 'view', 'table') AS kind
+           FROM information_schema.tables
+           WHERE TABLE_SCHEMA = DATABASE()
+           ORDER BY TABLE_NAME`,
+        )
+        for (const row of rows as Array<{ name: string; kind: string }>) {
+          if (sourceText.toLowerCase().includes(row.name.toLowerCase())) {
+            addDependency(dependencies, {
+              kind: row.kind as DependencyReference['kind'],
+              name: row.name,
+              detail: sourceSnippet(sourceText, row.name),
+              source: 'definition text',
+            })
+          }
+        }
+      }
+      const routineUsage = await queryOrNull<{ routine_name: string }>(
+        `SELECT DISTINCT REFERENCED_ROUTINE_NAME AS routine_name
+         FROM information_schema.ROUTINE_ROUTINE_USAGE
+         WHERE ROUTINE_SCHEMA = DATABASE() AND ROUTINE_NAME = ? AND REFERENCED_ROUTINE_SCHEMA = DATABASE()
+         ORDER BY REFERENCED_ROUTINE_NAME`,
+        [name],
+      )
+      if (routineUsage) {
+        for (const row of routineUsage) {
+          addDependency(dependencies, { kind: 'routine', name: row.routine_name, detail: null, source: 'catalog' })
+        }
+      } else {
+        const [rows] = await conn.query(
+          `SELECT ROUTINE_NAME AS name
+           FROM information_schema.routines
+           WHERE ROUTINE_SCHEMA = DATABASE()
+           ORDER BY ROUTINE_NAME`,
+        )
+        for (const row of rows as Array<{ name: string }>) {
+          if (sourceText.toLowerCase().includes(row.name.toLowerCase())) {
+            addDependency(dependencies, {
+              kind: 'routine',
+              name: row.name,
+              detail: sourceSnippet(sourceText, row.name),
+              source: 'definition text',
+            })
+          }
+        }
+      }
+      return { name, dependencies } as RoutineDependenciesInfo
+    },
+    async getRoutineReferences(object) {
+      const [rows] = await conn.query(
+        `SELECT ROUTINE_SCHEMA AS schema_name, ROUTINE_NAME AS name,
+                ROUTINE_TYPE AS kind, ROUTINE_DEFINITION AS definition
+         FROM information_schema.routines
+         WHERE ROUTINE_SCHEMA = DATABASE() AND ROUTINE_DEFINITION LIKE ?
+         ORDER BY ROUTINE_NAME
+         LIMIT 100`,
+        [`%${object}%`],
+      )
+      const list = rows as Array<{
+        schema_name: string
+        name: string
+        kind: 'FUNCTION' | 'PROCEDURE'
+        definition: string | null
+      }>
+      const references = list.map<RoutineReferenceInfo>(r => ({
+        schema: r.schema_name,
+        name: r.name,
+        kind: r.kind.toLowerCase() as RoutineReferenceInfo['kind'],
+        detail: r.definition ? sourceSnippet(r.definition, object) : null,
+      }))
+      return { object, references } as RoutineReferencesInfo
+    },
+    async getTriggerDependencies(name) {
+      const [rows] = await conn.query(
+        `SELECT TRIGGER_NAME AS trigger_name, EVENT_OBJECT_TABLE AS table_name,
+                ACTION_STATEMENT AS statement
+         FROM information_schema.triggers
+         WHERE TRIGGER_SCHEMA = DATABASE() AND TRIGGER_NAME = ?`,
+        [name],
+      )
+      const list = rows as Array<{
+        trigger_name: string
+        table_name: string
+        statement: string | null
+      }>
+      if (list.length === 0) throw new Error(`Trigger "${name}" not found.`)
+      const dependencies: DependencyReference[] = []
+      for (const row of list) {
+        addDependency(dependencies, {
+          kind: 'table',
+          name: row.table_name,
+          detail: null,
+          source: 'catalog',
+        })
+      }
+      const routines = await queryOrNull<{ routine_name: string }>(
+        `SELECT ROUTINE_NAME AS routine_name
+         FROM information_schema.TRIGGER_ROUTINE_USAGE
+         WHERE TRIGGER_SCHEMA = DATABASE() AND TRIGGER_NAME = ?
+         ORDER BY ROUTINE_NAME`,
+        [name],
+      )
+      if (routines) {
+        for (const row of routines) {
+          addDependency(dependencies, { kind: 'routine', name: row.routine_name, detail: null, source: 'catalog' })
+        }
+      } else {
+        const statement = list.map(r => r.statement ?? '').join('\n')
+        const [routineRows] = await conn.query(
+          `SELECT ROUTINE_NAME AS name
+           FROM information_schema.routines
+           WHERE ROUTINE_SCHEMA = DATABASE()
+           ORDER BY ROUTINE_NAME`,
+        )
+        for (const row of routineRows as Array<{ name: string }>) {
+          if (statement.toLowerCase().includes(row.name.toLowerCase())) {
+            addDependency(dependencies, {
+              kind: 'routine',
+              name: row.name,
+              detail: sourceSnippet(statement, row.name),
+              source: 'definition text',
+            })
+          }
+        }
+      }
+      return { name, dependencies } as TriggerDependenciesInfo
     },
     async close() {
       await conn.end()

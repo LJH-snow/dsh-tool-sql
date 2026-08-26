@@ -327,6 +327,45 @@ export interface TableDefinitionMatchInfo {
   simplified: boolean
 }
 
+export interface DependencyReference {
+  kind: 'table' | 'view' | 'materialized view' | 'routine' | 'trigger' | 'foreign key'
+  name: string
+  detail: string | null
+  source: 'catalog' | 'definition text'
+}
+
+export interface TableDependenciesInfo {
+  table: string
+  dependencies: DependencyReference[]
+}
+
+export interface ViewDependenciesInfo {
+  view: string
+  dependencies: DependencyReference[]
+}
+
+export interface RoutineDependenciesInfo {
+  name: string
+  dependencies: DependencyReference[]
+}
+
+export interface RoutineReferenceInfo {
+  schema: string
+  name: string
+  kind: 'function' | 'procedure'
+  detail: string | null
+}
+
+export interface RoutineReferencesInfo {
+  object: string
+  references: RoutineReferenceInfo[]
+}
+
+export interface TriggerDependenciesInfo {
+  name: string
+  dependencies: DependencyReference[]
+}
+
 /** SQL driver adapter; implementations live in drivers/* and are dynamically imported. */
 export interface Driver {
   query(sql: string, signal?: AbortSignal): Promise<{ columns: string[]; rows: Array<Record<string, unknown>> }>
@@ -374,6 +413,11 @@ export interface Driver {
   searchTriggerDefinitions(pattern: string, signal?: AbortSignal): Promise<TriggerDefinitionMatchInfo[]>
   searchConstraintDefinitions(pattern: string, signal?: AbortSignal): Promise<ConstraintDefinitionMatchInfo[]>
   searchTableDefinitions(pattern: string, signal?: AbortSignal): Promise<TableDefinitionMatchInfo[]>
+  getTableDependencies(table: string, signal?: AbortSignal): Promise<TableDependenciesInfo>
+  getViewDependencies(view: string, signal?: AbortSignal): Promise<ViewDependenciesInfo>
+  getRoutineDependencies(name: string, signal?: AbortSignal): Promise<RoutineDependenciesInfo>
+  getRoutineReferences(object: string, signal?: AbortSignal): Promise<RoutineReferencesInfo>
+  getTriggerDependencies(name: string, signal?: AbortSignal): Promise<TriggerDependenciesInfo>
   close(): Promise<void>
 }
 
@@ -922,6 +966,56 @@ export class DbClient {
     try {
       const normalized = pattern.includes('%') ? pattern : `%${pattern}%`
       return await driver.searchTableDefinitions(normalized, this.combinedSignal(signal))
+    } catch (error) {
+      if (error instanceof SqlError) throw error
+      throw new SqlError(error instanceof Error ? error.message : String(error), 'query')
+    }
+  }
+
+  async getTableDependencies(table: string, signal?: AbortSignal): Promise<TableDependenciesInfo> {
+    const driver = await this.getDriver()
+    try {
+      return await driver.getTableDependencies(table, this.combinedSignal(signal))
+    } catch (error) {
+      if (error instanceof SqlError) throw error
+      throw new SqlError(error instanceof Error ? error.message : String(error), 'query')
+    }
+  }
+
+  async getViewDependencies(view: string, signal?: AbortSignal): Promise<ViewDependenciesInfo> {
+    const driver = await this.getDriver()
+    try {
+      return await driver.getViewDependencies(view, this.combinedSignal(signal))
+    } catch (error) {
+      if (error instanceof SqlError) throw error
+      throw new SqlError(error instanceof Error ? error.message : String(error), 'query')
+    }
+  }
+
+  async getRoutineDependencies(name: string, signal?: AbortSignal): Promise<RoutineDependenciesInfo> {
+    const driver = await this.getDriver()
+    try {
+      return await driver.getRoutineDependencies(name, this.combinedSignal(signal))
+    } catch (error) {
+      if (error instanceof SqlError) throw error
+      throw new SqlError(error instanceof Error ? error.message : String(error), 'query')
+    }
+  }
+
+  async getRoutineReferences(object: string, signal?: AbortSignal): Promise<RoutineReferencesInfo> {
+    const driver = await this.getDriver()
+    try {
+      return await driver.getRoutineReferences(object, this.combinedSignal(signal))
+    } catch (error) {
+      if (error instanceof SqlError) throw error
+      throw new SqlError(error instanceof Error ? error.message : String(error), 'query')
+    }
+  }
+
+  async getTriggerDependencies(name: string, signal?: AbortSignal): Promise<TriggerDependenciesInfo> {
+    const driver = await this.getDriver()
+    try {
+      return await driver.getTriggerDependencies(name, this.combinedSignal(signal))
     } catch (error) {
       if (error instanceof SqlError) throw error
       throw new SqlError(error instanceof Error ? error.message : String(error), 'query')

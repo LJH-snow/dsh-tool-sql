@@ -2295,9 +2295,252 @@ export function createTools(client: DbClient) {
         return { matches: await client.searchTableDefinitions(args.pattern, exec.signal) }
       },
     }),
+
+    defineTool({
+      name: 'sql_get_table_dependencies',
+      description:
+        'Find objects that reference a table: views/materialized views, routines, triggers, and incoming foreign keys. PostgreSQL uses pg_depend plus routine source text; MySQL uses information_schema dependency catalogs with definition-text fallback. Read-only.',
+      parameters: {
+        table: { type: 'string', required: true, description: 'Table name to inspect for dependents' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            table: { type: 'string', description: 'Table name' },
+            dependencies: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: { type: 'string', enum: ['table', 'view', 'materialized view', 'routine', 'trigger', 'foreign key'], description: 'Dependent object kind' },
+                  name: { type: 'string', description: 'Dependent object name' },
+                  detail: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Dependency detail such as trigger definition or foreign key mapping' },
+                  source: { type: 'string', enum: ['catalog', 'definition text'], description: 'Whether the dependency came from catalog metadata or best-effort definition text' },
+                },
+              },
+              description: 'Objects referencing the table',
+            },
+          },
+        },
+        render: renderDependencies,
+      },
+      presentCall(args): ToolCallView {
+        return { card: 'generic', title: `Dependencies of ${args.table}`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { dependencies?: unknown[] }
+        return { card: 'generic', title: `${v.dependencies?.length ?? 0} dependencie(s)` }
+      },
+      async execute(args, exec) {
+        return await client.getTableDependencies(args.table, exec.signal)
+      },
+    }),
+
+    defineTool({
+      name: 'sql_get_view_dependencies',
+      description:
+        'Find tables, views, and routines referenced by a view. PostgreSQL reads pg_depend catalog dependencies; MySQL reads VIEW_TABLE_USAGE/VIEW_ROUTINE_USAGE with definition-text fallback. Read-only.',
+      parameters: {
+        view: { type: 'string', required: true, description: 'View name to inspect' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            view: { type: 'string', description: 'View name' },
+            dependencies: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: { type: 'string', enum: ['table', 'view', 'materialized view', 'routine', 'trigger', 'foreign key'], description: 'Referenced object kind' },
+                  name: { type: 'string', description: 'Referenced object name' },
+                  detail: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Definition context when available' },
+                  source: { type: 'string', enum: ['catalog', 'definition text'], description: 'Dependency source' },
+                },
+              },
+              description: 'Objects used by the view',
+            },
+          },
+        },
+        render: renderDependencies,
+      },
+      presentCall(args): ToolCallView {
+        return { card: 'generic', title: `Dependencies used by ${args.view}`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { dependencies?: unknown[] }
+        return { card: 'generic', title: `${v.dependencies?.length ?? 0} dependencie(s)` }
+      },
+      async execute(args, exec) {
+        return await client.getViewDependencies(args.view, exec.signal)
+      },
+    }),
+
+    defineTool({
+      name: 'sql_get_routine_dependencies',
+      description:
+        'Find tables, views, and routines referenced inside a function or stored procedure source/body. PostgreSQL scans pg_proc source text; MySQL uses ROUTINE_TABLE_USAGE/ROUTINE_ROUTINE_USAGE with definition-text fallback. Best-effort for dynamic SQL. Read-only.',
+      parameters: {
+        name: { type: 'string', required: true, description: 'Function/procedure name to inspect' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            name: { type: 'string', description: 'Routine name' },
+            dependencies: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: { type: 'string', enum: ['table', 'view', 'materialized view', 'routine', 'trigger', 'foreign key'], description: 'Referenced object kind' },
+                  name: { type: 'string', description: 'Referenced object name' },
+                  detail: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Source context when available' },
+                  source: { type: 'string', enum: ['catalog', 'definition text'], description: 'Dependency source' },
+                },
+              },
+              description: 'Objects used by the routine',
+            },
+          },
+        },
+        render: renderDependencies,
+      },
+      presentCall(args): ToolCallView {
+        return { card: 'generic', title: `Dependencies used by ${args.name}`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { dependencies?: unknown[] }
+        return { card: 'generic', title: `${v.dependencies?.length ?? 0} dependencie(s)` }
+      },
+      async execute(args, exec) {
+        return await client.getRoutineDependencies(args.name, exec.signal)
+      },
+    }),
+
+    defineTool({
+      name: 'sql_get_routine_references',
+      description:
+        'Find functions and stored procedures whose source/body references a given table, view, or routine. Useful for drop/rename impact analysis. Both databases use best-effort source text search. Read-only.',
+      parameters: {
+        object: { type: 'string', required: true, description: 'Table, view, or routine name to search for in routine sources' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            object: { type: 'string', description: 'Searched object name' },
+            references: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  schema: { type: 'string', description: 'Schema/database name' },
+                  name: { type: 'string', description: 'Routine name' },
+                  kind: { type: 'string', enum: ['function', 'procedure'], description: 'Routine kind' },
+                  detail: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Source context around the reference' },
+                },
+              },
+              description: 'Routines referencing the object',
+            },
+          },
+        },
+        render: (_args, value) => {
+          const references = value.references ?? []
+          if (references.length === 0) return [{ type: 'text', text: 'No routine source references found.' }]
+          const lines = ['schema\tname\tkind\tdetail']
+          lines.push('---\t---\t---\t---')
+          for (const r of references) {
+            lines.push(`${r.schema}\t${r.name}\t${r.kind}\t${r.detail ?? ''}`)
+          }
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(args): ToolCallView {
+        return { card: 'generic', title: `Routines referencing ${args.object}`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { references?: unknown[] }
+        return { card: 'generic', title: `${v.references?.length ?? 0} routine(s)` }
+      },
+      async execute(args, exec) {
+        return await client.getRoutineReferences(args.object, exec.signal)
+      },
+    }),
+
+    defineTool({
+      name: 'sql_get_trigger_dependencies',
+      description:
+        'Find the table and fired routine(s) used by a trigger. PostgreSQL reads pg_trigger and the trigger function; MySQL reads information_schema.triggers plus TRIGGER_ROUTINE_USAGE with definition-text fallback. Read-only.',
+      parameters: {
+        name: { type: 'string', required: true, description: 'Trigger name to inspect' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            name: { type: 'string', description: 'Trigger name' },
+            dependencies: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: { type: 'string', enum: ['table', 'view', 'materialized view', 'routine', 'trigger', 'foreign key'], description: 'Dependency kind' },
+                  name: { type: 'string', description: 'Dependency name' },
+                  detail: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Trigger definition context' },
+                  source: { type: 'string', enum: ['catalog', 'definition text'], description: 'Dependency source' },
+                },
+              },
+              description: 'Table and routines used by the trigger',
+            },
+          },
+        },
+        render: renderDependencies,
+      },
+      presentCall(args): ToolCallView {
+        return { card: 'generic', title: `Dependencies of trigger ${args.name}`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { dependencies?: unknown[] }
+        return { card: 'generic', title: `${v.dependencies?.length ?? 0} dependencie(s)` }
+      },
+      async execute(args, exec) {
+        return await client.getTriggerDependencies(args.name, exec.signal)
+      },
+    }),
   ]
 }
 
+
+function renderDependencies(_args: unknown, value: {
+  dependencies?: Array<{
+    kind?: string
+    name?: string
+    detail?: string | null
+    source?: string
+  }>
+}): Array<{ type: 'text'; text: string }> {
+  const dependencies = value.dependencies ?? []
+  if (dependencies.length === 0) return [{ type: 'text', text: '(no dependencies found)' }]
+  const lines = ['kind\tname\tsource\tdetail']
+  lines.push('---\t---\t---\t---')
+  for (const d of dependencies) {
+    const preview = (d.detail ?? '').replace(/\s+/g, ' ').slice(0, 220)
+    lines.push(`${d.kind}\t${d.name}\t${d.source}\t${preview}`)
+  }
+  return [{ type: 'text', text: lines.join('\n') }]
+}
 
 function renderQueryResult(_args: unknown, value: {
   columns?: string[]

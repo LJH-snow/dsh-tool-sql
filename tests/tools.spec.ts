@@ -164,6 +164,43 @@ function mockDriver(overrides: Partial<Driver> = {}): Driver {
     searchTableDefinitions: vi.fn(async () => [
       { schema: 'public', table: 'users', definition: 'CREATE TABLE users (id integer);', simplified: true },
     ]),
+    getTableDependencies: vi.fn(async () => ({
+      table: 'users',
+      dependencies: [
+        { kind: 'view', name: 'active_users', detail: null, source: 'catalog' },
+        { kind: 'routine', name: 'audit_user', detail: 'INSERT INTO audit_log ...', source: 'definition text' },
+        { kind: 'trigger', name: 'users_audit_trg', detail: 'CREATE TRIGGER ...', source: 'catalog' },
+        { kind: 'foreign key', name: 'orders_user_id_fkey', detail: 'orders.user_id -> users.id', source: 'catalog' },
+      ],
+    })),
+    getViewDependencies: vi.fn(async () => ({
+      view: 'active_users',
+      dependencies: [
+        { kind: 'table', name: 'users', detail: null, source: 'catalog' },
+        { kind: 'routine', name: 'mask_email', detail: null, source: 'catalog' },
+      ],
+    })),
+    getRoutineDependencies: vi.fn(async () => ({
+      name: 'get_orders',
+      dependencies: [
+        { kind: 'table', name: 'orders', detail: 'SELECT * FROM orders', source: 'definition text' },
+        { kind: 'routine', name: 'apply_discount', detail: 'CALL apply_discount()', source: 'definition text' },
+      ],
+    })),
+    getRoutineReferences: vi.fn(async () => ({
+      object: 'orders',
+      references: [
+        { schema: 'public', name: 'get_orders', kind: 'function', detail: 'FROM orders ...' },
+        { schema: 'public', name: 'archive_orders', kind: 'procedure', detail: 'ARCHIVE orders ...' },
+      ],
+    })),
+    getTriggerDependencies: vi.fn(async () => ({
+      name: 'users_audit_trg',
+      dependencies: [
+        { kind: 'table', name: 'users', detail: null, source: 'catalog' },
+        { kind: 'routine', name: 'audit_row', detail: 'EXECUTE FUNCTION audit_row()', source: 'catalog' },
+      ],
+    })),
     close: vi.fn(async () => {}),
     ...overrides,
   }
@@ -180,11 +217,16 @@ describe('tool definitions', () => {
       'sql_explain',
       'sql_get_column_stats',
       'sql_get_function_source',
+      'sql_get_routine_dependencies',
+      'sql_get_routine_references',
       'sql_get_schema',
       'sql_get_table_comments',
+      'sql_get_table_dependencies',
       'sql_get_table_health',
       'sql_get_table_last_access',
       'sql_get_table_row_count',
+      'sql_get_trigger_dependencies',
+      'sql_get_view_dependencies',
       'sql_list_active_queries',
       'sql_list_constraints',
       'sql_list_databases',
@@ -325,6 +367,16 @@ describe('tool definitions', () => {
     await expect(constraintDefs.execute({} as never, exec())).rejects.toThrow()
     const tableDdl = tools()['sql_search_table_ddl']
     await expect(tableDdl.execute({} as never, exec())).rejects.toThrow()
+    const tableDeps = tools()['sql_get_table_dependencies']
+    await expect(tableDeps.execute({} as never, exec())).rejects.toThrow()
+    const viewDeps = tools()['sql_get_view_dependencies']
+    await expect(viewDeps.execute({} as never, exec())).rejects.toThrow()
+    const routineDeps = tools()['sql_get_routine_dependencies']
+    await expect(routineDeps.execute({} as never, exec())).rejects.toThrow()
+    const routineRefs = tools()['sql_get_routine_references']
+    await expect(routineRefs.execute({} as never, exec())).rejects.toThrow()
+    const triggerDeps = tools()['sql_get_trigger_dependencies']
+    await expect(triggerDeps.execute({} as never, exec())).rejects.toThrow()
   })
 
   it('sql_explain prefixes EXPLAIN when missing and passes read-only check', async () => {
@@ -1009,6 +1061,89 @@ describe('tool definitions', () => {
     })
     expect(JSON.stringify(blocks)).toContain('CREATE TABLE users')
   })
+
+  it('sql_get_table_dependencies returns and renders dependencies', async () => {
+    const tool = tools()['sql_get_table_dependencies']
+    const result = await tool.execute({ table: 'users' }, exec())
+    expect(result).toEqual({
+      table: 'users',
+      dependencies: [
+        { kind: 'view', name: 'active_users', detail: null, source: 'catalog' },
+        { kind: 'routine', name: 'audit_user', detail: 'INSERT INTO audit_log ...', source: 'definition text' },
+        { kind: 'trigger', name: 'users_audit_trg', detail: 'CREATE TRIGGER ...', source: 'catalog' },
+        { kind: 'foreign key', name: 'orders_user_id_fkey', detail: 'orders.user_id -> users.id', source: 'catalog' },
+      ],
+    })
+    const blocks = (tool.output as { render: (a: unknown, v: any) => unknown }).render({ table: 'users' }, result)
+    const text = JSON.stringify(blocks)
+    expect(text).toContain('active_users')
+    expect(text).toContain('orders_user_id_fkey')
+    expect(text).toContain('foreign key')
+  })
+
+  it('sql_get_view_dependencies returns and renders dependencies', async () => {
+    const tool = tools()['sql_get_view_dependencies']
+    const result = await tool.execute({ view: 'active_users' }, exec())
+    expect(result).toEqual({
+      view: 'active_users',
+      dependencies: [
+        { kind: 'table', name: 'users', detail: null, source: 'catalog' },
+        { kind: 'routine', name: 'mask_email', detail: null, source: 'catalog' },
+      ],
+    })
+    const blocks = (tool.output as { render: (a: unknown, v: any) => unknown }).render({ view: 'active_users' }, result)
+    const text = JSON.stringify(blocks)
+    expect(text).toContain('users')
+    expect(text).toContain('mask_email')
+  })
+
+  it('sql_get_routine_dependencies returns and renders dependencies', async () => {
+    const tool = tools()['sql_get_routine_dependencies']
+    const result = await tool.execute({ name: 'get_orders' }, exec())
+    expect(result).toEqual({
+      name: 'get_orders',
+      dependencies: [
+        { kind: 'table', name: 'orders', detail: 'SELECT * FROM orders', source: 'definition text' },
+        { kind: 'routine', name: 'apply_discount', detail: 'CALL apply_discount()', source: 'definition text' },
+      ],
+    })
+    const blocks = (tool.output as { render: (a: unknown, v: any) => unknown }).render({ name: 'get_orders' }, result)
+    const text = JSON.stringify(blocks)
+    expect(text).toContain('orders')
+    expect(text).toContain('apply_discount')
+  })
+
+  it('sql_get_routine_references returns and renders references', async () => {
+    const tool = tools()['sql_get_routine_references']
+    const result = await tool.execute({ object: 'orders' }, exec())
+    expect(result).toEqual({
+      object: 'orders',
+      references: [
+        { schema: 'public', name: 'get_orders', kind: 'function', detail: 'FROM orders ...' },
+        { schema: 'public', name: 'archive_orders', kind: 'procedure', detail: 'ARCHIVE orders ...' },
+      ],
+    })
+    const blocks = (tool.output as { render: (a: unknown, v: any) => unknown }).render({ object: 'orders' }, result)
+    const text = JSON.stringify(blocks)
+    expect(text).toContain('get_orders')
+    expect(text).toContain('archive_orders')
+  })
+
+  it('sql_get_trigger_dependencies returns and renders dependencies', async () => {
+    const tool = tools()['sql_get_trigger_dependencies']
+    const result = await tool.execute({ name: 'users_audit_trg' }, exec())
+    expect(result).toEqual({
+      name: 'users_audit_trg',
+      dependencies: [
+        { kind: 'table', name: 'users', detail: null, source: 'catalog' },
+        { kind: 'routine', name: 'audit_row', detail: 'EXECUTE FUNCTION audit_row()', source: 'catalog' },
+      ],
+    })
+    const blocks = (tool.output as { render: (a: unknown, v: any) => unknown }).render({ name: 'users_audit_trg' }, result)
+    const text = JSON.stringify(blocks)
+    expect(text).toContain('audit_row')
+    expect(text).toContain('users')
+  })
 })
 
 describe('tool presentation (pure render intents)', () => {
@@ -1323,5 +1458,40 @@ describe('tool presentation (pure render intents)', () => {
     const t = defs()['sql_search_table_ddl'] as any
     expect(t.presentCall({ pattern: 'user' })).toMatchObject({ card: 'generic', kind: 'search', title: 'Search table DDL: user' })
     expect(t.presentResult({ pattern: 'user' }, { matches: [{}] })).toMatchObject({ title: '1 table DDL(s)' })
+  })
+
+  it('sql_get_table_dependencies pending and result cards', () => {
+    const t = defs()['sql_get_table_dependencies'] as any
+    const args = { table: 'users' }
+    expect(t.presentCall(args)).toMatchObject({ card: 'generic', kind: 'read', title: 'Dependencies of users' })
+    expect(t.presentResult(args, { dependencies: [{}, {}] })).toMatchObject({ title: '2 dependencie(s)' })
+  })
+
+  it('sql_get_view_dependencies pending and result cards', () => {
+    const t = defs()['sql_get_view_dependencies'] as any
+    const args = { view: 'active_users' }
+    expect(t.presentCall(args)).toMatchObject({ card: 'generic', kind: 'read', title: 'Dependencies used by active_users' })
+    expect(t.presentResult(args, { dependencies: [{}, {}] })).toMatchObject({ title: '2 dependencie(s)' })
+  })
+
+  it('sql_get_routine_dependencies pending and result cards', () => {
+    const t = defs()['sql_get_routine_dependencies'] as any
+    const args = { name: 'get_orders' }
+    expect(t.presentCall(args)).toMatchObject({ card: 'generic', kind: 'read', title: 'Dependencies used by get_orders' })
+    expect(t.presentResult(args, { dependencies: [{}] })).toMatchObject({ title: '1 dependencie(s)' })
+  })
+
+  it('sql_get_routine_references pending and result cards', () => {
+    const t = defs()['sql_get_routine_references'] as any
+    const args = { object: 'orders' }
+    expect(t.presentCall(args)).toMatchObject({ card: 'generic', kind: 'read', title: 'Routines referencing orders' })
+    expect(t.presentResult(args, { references: [{}, {}] })).toMatchObject({ title: '2 routine(s)' })
+  })
+
+  it('sql_get_trigger_dependencies pending and result cards', () => {
+    const t = defs()['sql_get_trigger_dependencies'] as any
+    const args = { name: 'users_audit_trg' }
+    expect(t.presentCall(args)).toMatchObject({ card: 'generic', kind: 'read', title: 'Dependencies of trigger users_audit_trg' })
+    expect(t.presentResult(args, { dependencies: [{}] })).toMatchObject({ title: '1 dependencie(s)' })
   })
 })

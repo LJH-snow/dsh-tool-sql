@@ -12,7 +12,7 @@
 | 架构 | 一切皆插件：`ctx.tools.register(defineTool(...))` 注册模型可见工具 |
 | 官方参考 | 与 `dsh-tool-github` 同模式（已验证的 defineTool 契约） |
 | 项目位置 | `deepseek-harness-pro/dsh-tool-sql/`（与 dsh-tool-github 平级） |
-| 状态 | v0.11 完成：47 工具 + 159 测试全绿，开发文档与代码同步 |
+| 状态 | v0.12 完成：52 工具 + 172 测试全绿，开发文档与代码同步 |
 
 ### 1.1 目标
 - 让 dsh Agent 能对 PostgreSQL / MySQL 执行**只读**查询：查数据、列表、看表结构。
@@ -133,6 +133,17 @@
 
 **不在范围（v0.11）**：写操作、执行 DDL、跨库查询、导出完整 pg_dump。
 
+### 1.13 范围（v0.12，阶段 15）
+| 工具 | 功能 | 需凭据 |
+|---|---|---|
+| `sql_get_table_dependencies` | 查看引用某表的视图/物化视图、例程、触发器与入向外键（PG：pg_depend + pg_proc 源码；MySQL：VIEW_TABLE_USAGE/ROUTINE_TABLE_USAGE/triggers/key_column_usage） | 是 |
+| `sql_get_view_dependencies` | 查看视图引用的表/视图/物化视图与例程（PG：pg_depend；MySQL：VIEW_TABLE_USAGE/VIEW_ROUTINE_USAGE + 定义文本兜底） | 是 |
+| `sql_get_routine_dependencies` | 查看函数/存储过程源码中引用的表、视图与例程（PG：prosrc；MySQL：ROUTINE_TABLE_USAGE/ROUTINE_ROUTINE_USAGE + 定义文本兜底） | 是 |
+| `sql_get_routine_references` | 查找源码文本引用某对象的函数/存储过程，用于删除/重命名影响分析 | 是 |
+| `sql_get_trigger_dependencies` | 查看触发器使用的目标表与触发例程（PG：pg_trigger/tgfoid；MySQL：information_schema.triggers + ACTION_STATEMENT） | 是 |
+
+**不在范围（v0.12）**：写操作、执行 DDL、跨库查询、终止锁/查询、解析任意第三方 SQL 方言。
+
 ## 2. 技术背景（契约要点，同 dsh-tool-github 已验证）
 
 - `defineTool` 契约：参数自动校验、输出规范 JSON 值、`exec.signal` 透传、`presentCall`/`presentResult` 纯函数。
@@ -220,6 +231,11 @@
 - [x] Driver 新增 `searchViewDefinitions`/`searchRoutineDefinitions`/`searchTriggerDefinitions`/`searchConstraintDefinitions`/`searchTableDefinitions` + PG/MySQL 实现
 - [x] 注册 5 个新工具：`sql_search_view_definitions`/`sql_search_routine_definitions`/`sql_search_trigger_definitions`/`sql_search_constraint_definitions`/`sql_search_table_ddl` + UI 呈现
 - [x] 验收：mock 单测；typecheck；build；README 双语更新 + 推送
+
+### 阶段 15：v0.12 扩展（对象依赖与影响分析）
+- [x] Driver 新增 `getTableDependencies`/`getViewDependencies`/`getRoutineDependencies`/`getRoutineReferences`/`getTriggerDependencies` + PG/MySQL 实现
+- [x] 注册 5 个新工具：`sql_get_table_dependencies`/`sql_get_view_dependencies`/`sql_get_routine_dependencies`/`sql_get_routine_references`/`sql_get_trigger_dependencies` + UI 呈现
+- [x] 验收：mock 单测；typecheck；build；README 双语更新
 
 ## 4. 开发日志
 
@@ -358,6 +374,17 @@
 - 注册 5 个新工具：`sql_search_view_definitions`/`sql_search_routine_definitions`/`sql_search_trigger_definitions`/`sql_search_constraint_definitions`/`sql_search_table_ddl`（共 47 工具）。
 - 测试增至 159/159（client 49 + tools 110）；typecheck / build 全绿。
 
+### 2026-08-26（阶段 15 规划）
+- 规划 v0.12：对象依赖与影响分析五件套（表被引用/视图引用/例程引用/例程反查/触发器依赖），全部保持只读安全模型。
+- 明确定义文本搜索为 best-effort，不承诺解析动态 SQL 或任意第三方方言。
+
+### 2026-08-26（阶段 15 实现）
+- Driver 接口新增 `getTableDependencies`/`getViewDependencies`/`getRoutineDependencies`/`getRoutineReferences`/`getTriggerDependencies`，PG/MySQL 双驱动实现。
+  - PG 表依赖：`pg_depend` 找视图/物化视图，`pg_proc.prosrc` 找例程，`pg_trigger` 找触发器，information_schema 找入向外键；视图依赖复用 `pg_depend`；例程依赖扫描关系与例程名字匹配源码；例程反查按源码文本匹配；触发器依赖读 `pg_trigger` + `tgfoid`。
+  - MySQL 表依赖：`VIEW_TABLE_USAGE`/`ROUTINE_TABLE_USAGE`/`triggers`/`key_column_usage`，目录表不可用时回退定义文本；视图依赖用 `VIEW_TABLE_USAGE`/`VIEW_ROUTINE_USAGE`；例程依赖用 `ROUTINE_TABLE_USAGE`/`ROUTINE_ROUTINE_USAGE`；触发器依赖用 `information_schema.triggers` + `ACTION_STATEMENT`。
+- 注册 5 个新工具：`sql_get_table_dependencies`/`sql_get_view_dependencies`/`sql_get_routine_dependencies`/`sql_get_routine_references`/`sql_get_trigger_dependencies`（共 52 工具）。
+- 测试增至 172/172（client 52 + tools 120）；typecheck / build 全绿。
+
 ## 5. 风险与决策记录
 
 | 时间 | 决策/风险 | 说明 |
@@ -389,3 +416,6 @@
 | 2026-08-25 | MySQL PK/UNIQUE 定义为列聚合 | information_schema 不提供完整定义，工具返回简化定义并标 `simplified: true` |
 | 2026-08-25 | 表/例程定义搜索可能执行多轮 SHOW CREATE | 最多返回 100 条匹配对象，列表较大时可能较慢；保持只读 |
 | 2026-08-14 | 风险：npm 发布受 2FA 限制 | 同 dsh-tool-github，先 GitHub 安装方式 |
+| 2026-08-26 | 依赖分析定义文本为 best-effort | 动态 SQL、字符串拼接、第三方方言不承诺完整解析，输出标注 `definition text` 来源 |
+| 2026-08-26 | MySQL 依赖目录表可能不可用 | 部分查询先尝试 catalog，失败后回退定义文本；仍失败按查询错误返回，不编造依赖 |
+| 2026-08-26 | 依赖范围限定 public/当前数据库 | 延续插件安全与可预期语义；跨 schema/跨库依赖不纳入 v0.12 |

@@ -1,4 +1,4 @@
-import type { Driver, DbConfig, ColumnInfo, IndexInfo, DatabaseInfo, TableStat, ColumnMatch, ViewInfo, TableSize, SchemaInfo, FunctionInfo, TriggerInfo, ForeignKeyInfo, SchemaDump, ExtensionInfo, SequenceInfo, ConstraintInfo, DatabaseItem, RoleInfo, GrantInfo, MaterializedViewInfo, PartitionInfo, TableRowCount, TableMatch, DatabaseSize, TableSizeItem, TableCommentInfo, ColumnStats, FunctionSourceInfo, EnumTypeInfo, TableHealth, ActiveQueryInfo, RoutineMatchInfo, IndexMatchInfo, IndexUsageInfo, LockInfo, TableAccessInfo, ViewDefinitionMatchInfo, RoutineDefinitionMatchInfo, TriggerDefinitionMatchInfo, ConstraintDefinitionMatchInfo, TableDefinitionMatchInfo } from '../client.js'
+import type { Driver, DbConfig, ColumnInfo, IndexInfo, DatabaseInfo, TableStat, ColumnMatch, ViewInfo, TableSize, SchemaInfo, FunctionInfo, TriggerInfo, ForeignKeyInfo, SchemaDump, ExtensionInfo, SequenceInfo, ConstraintInfo, DatabaseItem, RoleInfo, GrantInfo, MaterializedViewInfo, PartitionInfo, TableRowCount, TableMatch, DatabaseSize, TableSizeItem, TableCommentInfo, ColumnStats, FunctionSourceInfo, EnumTypeInfo, TableHealth, ActiveQueryInfo, RoutineMatchInfo, IndexMatchInfo, IndexUsageInfo, LockInfo, TableAccessInfo, ViewDefinitionMatchInfo, RoutineDefinitionMatchInfo, TriggerDefinitionMatchInfo, ConstraintDefinitionMatchInfo, TableDefinitionMatchInfo, DependencyReference, TableDependenciesInfo, ViewDependenciesInfo, RoutineDependenciesInfo, RoutineReferencesInfo, RoutineReferenceInfo, TriggerDependenciesInfo } from '../client.js'
 import { SqlError, assertSafeIdentifier } from '../client.js'
 
 export async function createPostgresDriver(config: DbConfig): Promise<Driver> {
@@ -91,6 +91,18 @@ export async function createPostgresDriver(config: DbConfig): Promise<Driver> {
   function parseTrigger(definition: string): { timing: string; event: string } {
     const match = /CREATE TRIGGER \S+ (BEFORE|AFTER|INSTEAD OF) (INSERT|UPDATE|DELETE|TRUNCATE)/.exec(definition)
     return { timing: match?.[1] ?? '', event: match?.[2] ?? '' }
+  }
+
+  function sourceSnippet(source: string, needle: string): string | null {
+    const index = source.toLowerCase().indexOf(needle.toLowerCase())
+    if (index < 0) return null
+    return source.slice(Math.max(0, index - 40), index + needle.length + 80).replace(/\s+/g, ' ').trim()
+  }
+
+  function addDependency(dependencies: DependencyReference[], item: DependencyReference): void {
+    if (!dependencies.some(d => d.kind === item.kind && d.name === item.name && d.detail === item.detail)) {
+      dependencies.push(item)
+    }
   }
 
   return {
@@ -1008,6 +1020,264 @@ export async function createPostgresDriver(config: DbConfig): Promise<Driver> {
         matches.push({ schema: 'public', table: row.table_name, definition: schema.ddl, simplified: true })
       }
       return matches
+    },
+    async getTableDependencies(table) {
+      const dependencies: DependencyReference[] = []
+      const views = await client.query<{ name: string; kind: string }>(
+        `SELECT DISTINCT dep.relname AS name,
+                CASE dep.relkind
+                  WHEN 'v' THEN 'view'
+                  WHEN 'm' THEN 'materialized view'
+                END AS kind
+         FROM pg_depend d
+         JOIN pg_rewrite r ON r.oid = d.objid
+         JOIN pg_class dep ON dep.oid = r.ev_class
+         JOIN pg_class ref ON ref.oid = d.refobjid
+         JOIN pg_namespace dn ON dn.oid = dep.relnamespace
+         JOIN pg_namespace rn ON rn.oid = ref.relnamespace
+         WHERE rn.nspname = 'public' AND ref.relname = $1
+           AND dn.nspname = 'public' AND dep.relkind IN ('v', 'm')
+         ORDER BY dep.relname`,
+        [table],
+      )
+      for (const row of views.rows) {
+        addDependency(dependencies, {
+          kind: row.kind as DependencyReference['kind'],
+          name: row.name,
+          detail: null,
+          source: 'catalog',
+        })
+      }
+      const routines = await client.query<{ name: string; kind: string; source: string }>(
+        `SELECT p.proname AS name,
+                CASE WHEN p.prokind = 'p' THEN 'procedure' ELSE 'function' END AS kind,
+                p.prosrc AS source
+         FROM pg_proc p
+         JOIN pg_namespace n ON n.oid = p.pronamespace
+         WHERE n.nspname = 'public' AND p.prokind IN ('f', 'p') AND p.prosrc ILIKE $1
+         ORDER BY p.proname
+         LIMIT 100`,
+        [`%${table}%`],
+      )
+      for (const row of routines.rows) {
+        addDependency(dependencies, {
+          kind: 'routine',
+          name: row.name,
+          detail: sourceSnippet(row.source, table) ?? row.kind,
+          source: 'definition text',
+        })
+      }
+      const triggers = await client.query<{ name: string; definition: string }>(
+        `SELECT t.tgname AS name, pg_get_triggerdef(t.oid) AS definition
+         FROM pg_trigger t
+         JOIN pg_class c ON c.oid = t.tgrelid
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE n.nspname = 'public' AND c.relname = $1 AND NOT t.tgisinternal
+         ORDER BY t.tgname`,
+        [table],
+      )
+      for (const row of triggers.rows) {
+        addDependency(dependencies, {
+          kind: 'trigger',
+          name: row.name,
+          detail: row.definition ?? null,
+          source: 'catalog',
+        })
+      }
+      const foreignKeys = await client.query<{
+        name: string
+        table_name: string
+        column_name: string
+        referenced_table: string
+        referenced_column: string
+      }>(
+        `SELECT tc.constraint_name AS name, tc.table_name AS table_name,
+                kcu.column_name AS column_name, ccu.table_name AS referenced_table,
+                ccu.column_name AS referenced_column
+         FROM information_schema.table_constraints tc
+         JOIN information_schema.key_column_usage kcu
+           ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
+         JOIN information_schema.constraint_column_usage ccu
+           ON ccu.constraint_name = tc.constraint_name AND ccu.table_schema = tc.table_schema
+         WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_schema = 'public'
+           AND ccu.table_schema = 'public' AND ccu.table_name = $1
+         ORDER BY tc.table_name, kcu.ordinal_position`,
+        [table],
+      )
+      for (const row of foreignKeys.rows) {
+        addDependency(dependencies, {
+          kind: 'foreign key',
+          name: row.name,
+          detail: `${row.table_name}.${row.column_name} -> ${row.referenced_table}.${row.referenced_column}`,
+          source: 'catalog',
+        })
+      }
+      return { table, dependencies } as TableDependenciesInfo
+    },
+    async getViewDependencies(view) {
+      const dependencies: DependencyReference[] = []
+      const relations = await client.query<{ name: string; kind: string }>(
+        `SELECT DISTINCT refc.relname AS name,
+                CASE refc.relkind
+                  WHEN 'r' THEN 'table'
+                  WHEN 'f' THEN 'table'
+                  WHEN 'v' THEN 'view'
+                  WHEN 'm' THEN 'materialized view'
+                END AS kind
+         FROM pg_depend d
+         JOIN pg_rewrite r ON r.oid = d.objid
+         JOIN pg_class dep ON dep.oid = r.ev_class
+         JOIN pg_class refc ON refc.oid = d.refobjid
+         JOIN pg_namespace dn ON dn.oid = dep.relnamespace
+         JOIN pg_namespace rn ON rn.oid = refc.relnamespace
+         WHERE dn.nspname = 'public' AND dep.relname = $1 AND dep.relkind IN ('v', 'm')
+           AND rn.nspname = 'public' AND refc.relkind IN ('r', 'v', 'm', 'f')
+         ORDER BY refc.relname`,
+        [view],
+      )
+      for (const row of relations.rows) {
+        addDependency(dependencies, {
+          kind: row.kind as DependencyReference['kind'],
+          name: row.name,
+          detail: null,
+          source: 'catalog',
+        })
+      }
+      const routines = await client.query<{ name: string }>(
+        `SELECT DISTINCT p.proname AS name
+         FROM pg_depend d
+         JOIN pg_rewrite r ON r.oid = d.objid
+         JOIN pg_class dep ON dep.oid = r.ev_class
+         JOIN pg_proc p ON p.oid = d.refobjid
+         JOIN pg_namespace dn ON dn.oid = dep.relnamespace
+         JOIN pg_namespace pn ON pn.oid = p.pronamespace
+         WHERE dn.nspname = 'public' AND dep.relname = $1 AND dep.relkind IN ('v', 'm')
+           AND pn.nspname = 'public'
+         ORDER BY p.proname`,
+        [view],
+      )
+      for (const row of routines.rows) {
+        addDependency(dependencies, {
+          kind: 'routine',
+          name: row.name,
+          detail: null,
+          source: 'catalog',
+        })
+      }
+      return { view, dependencies } as ViewDependenciesInfo
+    },
+    async getRoutineDependencies(name) {
+      const routines = await client.query<{ name: string; source: string }>(
+        `SELECT p.proname AS name, p.prosrc AS source
+         FROM pg_proc p
+         JOIN pg_namespace n ON n.oid = p.pronamespace
+         WHERE n.nspname = 'public' AND p.proname = $1 AND p.prokind IN ('f', 'p')
+         ORDER BY p.proname`,
+        [name],
+      )
+      if (routines.rows.length === 0) {
+        throw new SqlError(`Routine "${name}" not found in public schema.`, 'query')
+      }
+      const sourceText = routines.rows.map(r => r.source).join('\n')
+      const relations = await client.query<{ name: string; kind: string }>(
+        `SELECT c.relname AS name,
+                CASE c.relkind
+                  WHEN 'r' THEN 'table'
+                  WHEN 'v' THEN 'view'
+                  WHEN 'm' THEN 'materialized view'
+                END AS kind
+         FROM pg_class c
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE n.nspname = 'public' AND c.relkind IN ('r', 'v', 'm')
+         ORDER BY c.relname`,
+      )
+      const dependencies: DependencyReference[] = []
+      for (const row of relations.rows) {
+        if (sourceText.toLowerCase().includes(row.name.toLowerCase())) {
+          addDependency(dependencies, {
+            kind: row.kind as DependencyReference['kind'],
+            name: row.name,
+            detail: sourceSnippet(sourceText, row.name),
+            source: 'definition text',
+          })
+        }
+      }
+      const functions = await client.query<{ name: string; kind: string }>(
+        `SELECT p.proname AS name,
+                CASE WHEN p.prokind = 'p' THEN 'procedure' ELSE 'function' END AS kind
+         FROM pg_proc p
+         JOIN pg_namespace n ON n.oid = p.pronamespace
+         WHERE n.nspname = 'public' AND p.prokind IN ('f', 'p')
+         ORDER BY p.proname`,
+      )
+      for (const row of functions.rows) {
+        if (sourceText.toLowerCase().includes(row.name.toLowerCase())) {
+          addDependency(dependencies, {
+            kind: 'routine',
+            name: row.name,
+            detail: sourceSnippet(sourceText, row.name) ?? row.kind,
+            source: 'definition text',
+          })
+        }
+      }
+      return { name, dependencies } as RoutineDependenciesInfo
+    },
+    async getRoutineReferences(object) {
+      const result = await client.query<{ name: string; kind: string; source: string }>(
+        `SELECT p.proname AS name,
+                CASE WHEN p.prokind = 'p' THEN 'procedure' ELSE 'function' END AS kind,
+                p.prosrc AS source
+         FROM pg_proc p
+         JOIN pg_namespace n ON n.oid = p.pronamespace
+         WHERE n.nspname = 'public' AND p.prokind IN ('f', 'p') AND p.prosrc ILIKE $1
+         ORDER BY p.proname
+         LIMIT 100`,
+        [`%${object}%`],
+      )
+      const references = result.rows.map<RoutineReferenceInfo>(r => ({
+        schema: 'public',
+        name: r.name,
+        kind: r.kind as RoutineReferenceInfo['kind'],
+        detail: sourceSnippet(r.source, object),
+      }))
+      return { object, references } as RoutineReferencesInfo
+    },
+    async getTriggerDependencies(name) {
+      const result = await client.query<{
+        trigger_name: string
+        table_name: string
+        function_name: string
+        definition: string
+      }>(
+        `SELECT t.tgname AS trigger_name, c.relname AS table_name,
+                p.proname AS function_name, pg_get_triggerdef(t.oid) AS definition
+         FROM pg_trigger t
+         JOIN pg_class c ON c.oid = t.tgrelid
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+         JOIN pg_proc p ON p.oid = t.tgfoid
+         WHERE n.nspname = 'public' AND t.tgname = $1 AND NOT t.tgisinternal
+         ORDER BY c.relname, t.tgname`,
+        [name],
+      )
+      if (result.rows.length === 0) {
+        throw new SqlError(`Trigger "${name}" not found in public schema.`, 'query')
+      }
+      const dependencies: DependencyReference[] = []
+      for (const row of result.rows) {
+        addDependency(dependencies, {
+          kind: 'table',
+          name: row.table_name,
+          detail: null,
+          source: 'catalog',
+        })
+        addDependency(dependencies, {
+          kind: 'routine',
+          name: row.function_name,
+          detail: row.definition ?? null,
+          source: 'catalog',
+        })
+      }
+      return { name, dependencies } as TriggerDependenciesInfo
     },
     async close() {
       await client.end()

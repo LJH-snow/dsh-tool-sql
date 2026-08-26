@@ -196,6 +196,43 @@ function mockDriver(overrides: Partial<Driver> = {}): Driver {
     searchTableDefinitions: vi.fn(async () => [
       { schema: 'public', table: 'users', definition: 'CREATE TABLE users (id integer);', simplified: true },
     ]),
+    getTableDependencies: vi.fn(async () => ({
+      table: 'users',
+      dependencies: [
+        { kind: 'view', name: 'active_users', detail: null, source: 'catalog' },
+        { kind: 'routine', name: 'audit_user', detail: 'INSERT INTO audit_log ...', source: 'definition text' },
+        { kind: 'trigger', name: 'users_audit_trg', detail: 'CREATE TRIGGER ...', source: 'catalog' },
+        { kind: 'foreign key', name: 'orders_user_id_fkey', detail: 'orders.user_id -> users.id', source: 'catalog' },
+      ],
+    })),
+    getViewDependencies: vi.fn(async () => ({
+      view: 'active_users',
+      dependencies: [
+        { kind: 'table', name: 'users', detail: null, source: 'catalog' },
+        { kind: 'routine', name: 'mask_email', detail: null, source: 'catalog' },
+      ],
+    })),
+    getRoutineDependencies: vi.fn(async () => ({
+      name: 'get_orders',
+      dependencies: [
+        { kind: 'table', name: 'orders', detail: 'SELECT * FROM orders', source: 'definition text' },
+        { kind: 'routine', name: 'apply_discount', detail: 'CALL apply_discount()', source: 'definition text' },
+      ],
+    })),
+    getRoutineReferences: vi.fn(async () => ({
+      object: 'orders',
+      references: [
+        { schema: 'public', name: 'get_orders', kind: 'function', detail: 'FROM orders ...' },
+        { schema: 'public', name: 'archive_orders', kind: 'procedure', detail: 'ARCHIVE orders ...' },
+      ],
+    })),
+    getTriggerDependencies: vi.fn(async () => ({
+      name: 'users_audit_trg',
+      dependencies: [
+        { kind: 'table', name: 'users', detail: null, source: 'catalog' },
+        { kind: 'routine', name: 'audit_row', detail: 'EXECUTE FUNCTION audit_row()', source: 'catalog' },
+      ],
+    })),
     close: vi.fn(async () => {}),
     ...overrides,
   }
@@ -623,5 +660,67 @@ describe('DbClient v0.2 methods', () => {
     const driver = mockDriver({ searchTableDefinitions: vi.fn(async () => { throw new Error('catalog unavailable') }) })
     const client = makeClient(driver)
     await expect(client.searchTableDefinitions('users')).rejects.toMatchObject({ kind: 'query', message: 'catalog unavailable' })
+  })
+
+  it('v0.12 dependency methods return table/view/routine/trigger impact info', async () => {
+    const client = makeClient(mockDriver())
+    expect(await client.getTableDependencies('users')).toEqual({
+      table: 'users',
+      dependencies: [
+        { kind: 'view', name: 'active_users', detail: null, source: 'catalog' },
+        { kind: 'routine', name: 'audit_user', detail: 'INSERT INTO audit_log ...', source: 'definition text' },
+        { kind: 'trigger', name: 'users_audit_trg', detail: 'CREATE TRIGGER ...', source: 'catalog' },
+        { kind: 'foreign key', name: 'orders_user_id_fkey', detail: 'orders.user_id -> users.id', source: 'catalog' },
+      ],
+    })
+    expect(await client.getViewDependencies('active_users')).toEqual({
+      view: 'active_users',
+      dependencies: [
+        { kind: 'table', name: 'users', detail: null, source: 'catalog' },
+        { kind: 'routine', name: 'mask_email', detail: null, source: 'catalog' },
+      ],
+    })
+    expect(await client.getRoutineDependencies('get_orders')).toEqual({
+      name: 'get_orders',
+      dependencies: [
+        { kind: 'table', name: 'orders', detail: 'SELECT * FROM orders', source: 'definition text' },
+        { kind: 'routine', name: 'apply_discount', detail: 'CALL apply_discount()', source: 'definition text' },
+      ],
+    })
+    expect(await client.getRoutineReferences('orders')).toEqual({
+      object: 'orders',
+      references: [
+        { schema: 'public', name: 'get_orders', kind: 'function', detail: 'FROM orders ...' },
+        { schema: 'public', name: 'archive_orders', kind: 'procedure', detail: 'ARCHIVE orders ...' },
+      ],
+    })
+    expect(await client.getTriggerDependencies('users_audit_trg')).toEqual({
+      name: 'users_audit_trg',
+      dependencies: [
+        { kind: 'table', name: 'users', detail: null, source: 'catalog' },
+        { kind: 'routine', name: 'audit_row', detail: 'EXECUTE FUNCTION audit_row()', source: 'catalog' },
+      ],
+    })
+  })
+
+  it('passes dependency method inputs through to the driver', async () => {
+    const driver = mockDriver()
+    const client = makeClient(driver)
+    await client.getTableDependencies('orders', new AbortController().signal)
+    expect(driver.getTableDependencies).toHaveBeenCalledWith('orders', expect.anything())
+    await client.getViewDependencies('order_summary', new AbortController().signal)
+    expect(driver.getViewDependencies).toHaveBeenCalledWith('order_summary', expect.anything())
+    await client.getRoutineDependencies('get_orders', new AbortController().signal)
+    expect(driver.getRoutineDependencies).toHaveBeenCalledWith('get_orders', expect.anything())
+    await client.getRoutineReferences('orders', new AbortController().signal)
+    expect(driver.getRoutineReferences).toHaveBeenCalledWith('orders', expect.anything())
+    await client.getTriggerDependencies('trg', new AbortController().signal)
+    expect(driver.getTriggerDependencies).toHaveBeenCalledWith('trg', expect.anything())
+  })
+
+  it('maps driver errors from v0.12 dependency methods to SqlError', async () => {
+    const driver = mockDriver({ getViewDependencies: vi.fn(async () => { throw new Error('dependency catalog unavailable') }) })
+    const client = makeClient(driver)
+    await expect(client.getViewDependencies('active_users')).rejects.toMatchObject({ kind: 'query', message: 'dependency catalog unavailable' })
   })
 })

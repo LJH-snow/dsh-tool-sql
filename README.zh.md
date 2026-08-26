@@ -104,6 +104,11 @@ npm install /path/to/dsh-tool-sql
 | `sql_search_trigger_definitions` | 按触发器/表/动作文本搜索触发器并返回定义或动作语句 |
 | `sql_search_constraint_definitions` | 按名称或定义文本搜索主键/唯一/检查约束定义 |
 | `sql_search_table_ddl` | 按表名搜索并返回建表 DDL（PostgreSQL 简化生成；MySQL 服务器原样） |
+| `sql_get_table_dependencies` | 查找引用某表的对象：视图/物化视图、例程、触发器、入向外键 |
+| `sql_get_view_dependencies` | 查看视图引用的表、视图和例程 |
+| `sql_get_routine_dependencies` | 查看函数/存储过程源码中引用的表、视图和例程 |
+| `sql_get_routine_references` | 查找源码文本引用某对象的函数/存储过程（删除/重命名影响分析） |
+| `sql_get_trigger_dependencies` | 查看触发器使用的表和触发例程 |
 
 ## 开发
 
