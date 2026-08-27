@@ -1,5 +1,5 @@
 {
-  "name": "dsh-tool-sql",
+  "name": "@libai168/dsh-tool-sql",
   "description": "Read-only SQL query tools for DeepSeek Harness: PostgreSQL and MySQL",
   "version": "0.1.0",
   "type": "module",
