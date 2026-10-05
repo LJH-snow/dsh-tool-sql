@@ -724,3 +724,11 @@ describe('DbClient v0.2 methods', () => {
     await expect(client.getViewDependencies('active_users')).rejects.toMatchObject({ kind: 'query', message: 'dependency catalog unavailable' })
   })
 })
+
+describe('SqlError identity', () => {
+  it('reports its own class name so callers can branch on error.name', () => {
+    const error = new SqlError('probe', 'query')
+    expect(error).toBeInstanceOf(SqlError)
+    expect(error.name).toBe('SqlError')
+  })
+})

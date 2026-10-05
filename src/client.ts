@@ -433,6 +433,7 @@ export function assertSafeIdentifier(name: string, what = 'identifier'): void {
 export class SqlError extends Error {
   constructor(message: string, readonly kind: 'unsupported' | 'denied' | 'timeout' | 'connection' | 'query' = 'query') {
     super(message)
+    this.name = 'SqlError'
   }
 }
 
