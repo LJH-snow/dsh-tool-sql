@@ -83,6 +83,19 @@ describe('assertReadOnly', () => {
     expect(() => assertReadOnly('SELECT * INTO temporary audit_copy FROM audit_log')).toThrow(SqlError)
   })
 
+  it.each([
+    ['line-comment marker in a string', "SELECT '-- ' || pg_sleep(1)"],
+    ['block-comment markers in a string', "SELECT '/*' || pg_sleep(1) /* end */"],
+    ['dollar-quoted line-comment marker', 'SELECT $$-- $$ || pg_sleep(1)'],
+  ])('rejects dangerous functions after %s', (_description, sql) => {
+    expect(() => assertReadOnly(sql)).toThrow(SqlError)
+  })
+
+  it('does not inspect function names inside actual SQL comments', () => {
+    expect(() => assertReadOnly('SELECT 1 -- pg_sleep(1)\n')).not.toThrow()
+    expect(() => assertReadOnly('SELECT 1 /* pg_sleep(1) */')).not.toThrow()
+  })
+
   it('rejects dialect-ambiguous escaped quotes that can hide a second statement', () => {
     expect(() => assertReadOnly("SELECT 'abc\\'; SELECT 2")).toThrow(SqlError)
     expect(() => assertReadOnly("SELECT '{\"a\":1}'::jsonb #> '{a}'; SELECT 2")).toThrow(SqlError)

@@ -493,11 +493,116 @@ function stripLeadingSqlTrivia(sql: string): string {
   return sql.slice(index)
 }
 
-/** Normalize comments before checking tokens that the database parser ignores. */
+interface SqlCommentMode {
+  backslashEscapes: boolean
+  hashComments: boolean
+  dollarQuotes: boolean
+  nestedBlockComments: boolean
+}
+
+/** Remove comments only when the scanner is outside quoted SQL text. */
+function stripSqlCommentsWithMode(sql: string, mode: SqlCommentMode): string {
+  let output = ''
+  let quote: '\'' | '"' | '`' | null = null
+  let dollarTag: string | null = null
+  let lineComment = false
+  let blockDepth = 0
+
+  for (let index = 0; index < sql.length; index += 1) {
+    const char = sql[index]
+    const next = sql[index + 1]
+
+    if (lineComment) {
+      if (char === '\n' || char === '\r') {
+        lineComment = false
+        output += char
+      } else {
+        output += ' '
+      }
+      continue
+    }
+
+    if (blockDepth > 0) {
+      if (mode.nestedBlockComments && char === '/' && next === '*') {
+        blockDepth += 1
+        output += '  '
+        index += 1
+      } else if (char === '*' && next === '/') {
+        blockDepth -= 1
+        output += '  '
+        index += 1
+      } else {
+        output += char === '\n' || char === '\r' ? char : ' '
+      }
+      continue
+    }
+
+    if (dollarTag) {
+      output += char
+      if (sql.startsWith(dollarTag, index)) {
+        output += sql.slice(index + 1, index + dollarTag.length)
+        index += dollarTag.length - 1
+        dollarTag = null
+      }
+      continue
+    }
+
+    if (quote) {
+      output += char
+      if (mode.backslashEscapes && char === '\\') {
+        if (next !== undefined) { output += next; index += 1 }
+      } else if (char === quote) {
+        if (next === quote) { output += next; index += 1 }
+        else quote = null
+      }
+      continue
+    }
+
+    const commentStart = isSqlCommentStart(sql, index, mode.hashComments)
+    if (commentStart === 'line') {
+      lineComment = true
+      output += ' '
+      continue
+    }
+    if (commentStart === 'block' && !sql.startsWith('/*!', index) && !/^\/\*M!/i.test(sql.slice(index))) {
+      blockDepth = 1
+      output += ' '
+      index += 1
+      continue
+    }
+
+    if (mode.dollarQuotes && char === '$') {
+      const tag = /^\$[A-Za-z_][A-Za-z0-9_]*\$|^\$\$/.exec(sql.slice(index))?.[0]
+      if (tag) {
+        dollarTag = tag
+        output += tag
+        index += tag.length - 1
+        continue
+      }
+    }
+
+    if (char === '\'' || char === '"' || char === '`') quote = char
+    output += char
+  }
+
+  return output
+}
+
+/** Normalize comments under PostgreSQL and MySQL quoting rules. */
 function stripSqlComments(sql: string): string {
-  return sql
-    .replace(/\/\*[\s\S]*?\*\//g, ' ')
-    .replace(/--(?=\s)[^\r\n]*(?:\r?\n|$)/g, ' ')
+  const postgres = stripSqlCommentsWithMode(sql, {
+    backslashEscapes: false,
+    hashComments: false,
+    dollarQuotes: true,
+    nestedBlockComments: true,
+  })
+  const mysql = stripSqlCommentsWithMode(sql, {
+    backslashEscapes: true,
+    hashComments: true,
+    dollarQuotes: false,
+    nestedBlockComments: false,
+  })
+  return `${postgres}\n${mysql}`
 }
 
 /** Return true when a semicolon separates two executable statements. */
