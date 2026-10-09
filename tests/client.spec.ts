@@ -48,6 +48,69 @@ describe('assertReadOnly', () => {
   it('rejects non-whitelisted first words', () => {
     expect(() => assertReadOnly('FETCH ALL FROM cursor')).toThrow(/not allowed/)
   })
+
+  it('rejects multiple SQL statements while allowing one trailing terminator', () => {
+    expect(() => assertReadOnly('SELECT 1; SELECT 2')).toThrow(SqlError)
+    expect(() => assertReadOnly('SELECT 1;')).not.toThrow()
+    expect(() => assertReadOnly("SELECT 'semi;colon'")).not.toThrow()
+  })
+
+  it('rejects dangerous read-looking functions and locking/file clauses', () => {
+    for (const sql of [
+      "SELECT set_config('default_transaction_read_only', 'off', false)",
+      "SELECT nextval('users_id_seq')",
+      "SELECT pg_write_file('/tmp/pwned', 'x')",
+      "SELECT dblink_exec('dbname=app', 'DROP TABLE users')",
+      'SELECT * FROM users FOR UPDATE',
+      'SELECT * FROM users FOR NO KEY UPDATE',
+      'SELECT * FROM users FOR KEY SHARE',
+      "SELECT * FROM users INTO OUTFILE '/tmp/users.csv'",
+      'EXPLAIN ANALYZE SELECT * FROM users',
+    ]) {
+      expect(() => assertReadOnly(sql), sql).toThrow(SqlError)
+    }
+  })
+
+  it('keeps safe SELECT/WITH expressions readable', () => {
+    expect(() => assertReadOnly('SELECT lower(name), count(*) FROM users GROUP BY lower(name)')).not.toThrow()
+    expect(() => assertReadOnly('WITH recent AS (SELECT * FROM users) SELECT * FROM recent')).not.toThrow()
+    expect(() => assertReadOnly('-- generated query\nSELECT 1;')).not.toThrow()
+  })
+
+  it('rejects dangerous functions and clauses even when comments split tokens', () => {
+    expect(() => assertReadOnly('SELECT pg_sleep(1)')).toThrow(SqlError)
+    expect(() => assertReadOnly("SELECT nextval/**/('users_id_seq')")).toThrow(SqlError)
+    expect(() => assertReadOnly('SELECT * INTO temporary audit_copy FROM audit_log')).toThrow(SqlError)
+  })
+
+  it('rejects dialect-ambiguous escaped quotes that can hide a second statement', () => {
+    expect(() => assertReadOnly("SELECT 'abc\\'; SELECT 2")).toThrow(SqlError)
+    expect(() => assertReadOnly("SELECT '{\"a\":1}'::jsonb #> '{a}'; SELECT 2")).toThrow(SqlError)
+  })
+
+  it('rejects quoted dangerous function names and additional side-effect functions', () => {
+    for (const sql of [
+      'SELECT "pg_sleep"(1)',
+      'SELECT pg_advisory_lock_shared(1)',
+      'SELECT pg_try_advisory_lock(1)',
+      'SELECT pg_try_advisory_xact_lock(1)',
+      'SELECT pg_advisory_unlock_shared(1)',
+      'SELECT pg_stat_reset()',
+      'SELECT pg_log_backend_memory_contexts(1)',
+      'SELECT lo_create(123)',
+      'SELECT RELEASE_ALL_LOCKS()',
+    ]) {
+      expect(() => assertReadOnly(sql), sql).toThrow(SqlError)
+    }
+  })
+
+  it('rejects quoted SELECT INTO targets', () => {
+    expect(() => assertReadOnly('SELECT * INTO "audit" FROM audit_log')).toThrow(SqlError)
+    expect(() => assertReadOnly('SELECT * INTO `audit` FROM audit_log')).toThrow(SqlError)
+    expect(() => assertReadOnly('SELECT * INTO db.audit FROM audit_log')).toThrow(SqlError)
+    expect(() => assertReadOnly('SELECT * INTO public."audit" FROM audit_log')).toThrow(SqlError)
+    expect(() => assertReadOnly('SELECT * INTO "public"."audit" FROM audit_log')).toThrow(SqlError)
+  })
 })
 
 function mockDriver(overrides: Partial<Driver> = {}): Driver {
@@ -290,6 +353,31 @@ describe('DbClient.query', () => {
     const driver = mockDriver({ query: vi.fn(async () => { throw new SqlError('denied', 'denied') }) })
     const client = makeClient(driver)
     await expect(client.query('SELECT * FROM users')).rejects.toMatchObject({ kind: 'denied' })
+  })
+
+  it('limits columns and serialized result bytes in the client layer', async () => {
+    const driver = mockDriver({
+      query: vi.fn(async () => ({
+        columns: ['id', 'email', 'notes'],
+        rows: [
+          { id: 1, email: 'a@example.test', notes: 'first row' },
+          { id: 2, email: 'b@example.test', notes: 'second row' },
+        ],
+      })),
+    })
+    const client = makeClient(driver, { maxColumns: 2, maxBytes: 180 })
+    const result = await client.query('SELECT * FROM users')
+
+    expect(result.columns).toEqual(['id', 'email'])
+    expect(result.rows.every(row => Object.keys(row).every(key => ['id', 'email'].includes(key)))).toBe(true)
+    expect(result.truncated).toBe(true)
+    expect(JSON.stringify(result).length).toBeLessThanOrEqual(180)
+  })
+
+  it('falls back to a safe timeout when timeoutMs is invalid', async () => {
+    const driver = mockDriver()
+    const client = makeClient(driver, { timeoutMs: -1 })
+    await expect(client.query('SELECT 1')).resolves.toMatchObject({ rows: [{ id: 1 }] })
   })
 })
 

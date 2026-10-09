@@ -45,19 +45,24 @@ npm install /path/to/dsh-tool-sql
     password: 'dbpass'
     database: 'appdb'
     maxRows: 100            # 可选，单次查询返回最大行数（默认 100）
+    maxColumns: 100         # 可选，单次查询最大返回列数（默认 100）
+    maxBytes: 1048576       # 可选，序列化结果最大字节数（默认 1 MiB）
     timeoutMs: 15000        # 可选，查询超时毫秒数（默认 15000）
     ssl: false              # 可选，启用 TLS
+    # sslRejectUnauthorized: true # 可选，TLS 默认校验证书
 ```
 
 完整示例：[examples/cordis.yml](examples/cordis.yml)。
 
-> 安全：插件默认强制只读。仅允许 `SELECT`/`EXPLAIN`/`SHOW`/`DESCRIBE`/`WITH`/`PRAGMA`/`VALUES` 语句；包含写关键字（INSERT/UPDATE/DELETE/DDL 等）一律拒绝。凭据只从插件配置读取，绝不打印或写入日志。
+> 安全：插件在两层强制只读。仅允许 `SELECT`/`EXPLAIN`/`SHOW`/`DESCRIBE`/`WITH`/`PRAGMA`/`VALUES` 语句；多语句、DML/DDL、事务或会话控制、锁定子句、文件 I/O、外部执行、序列修改，以及常见 PostgreSQL/MySQL 危险函数都会在驱动执行前拒绝。PostgreSQL 会话设置 `default_transaction_read_only` 与 `statement_timeout`；MySQL 会话设置 `TRANSACTION READ ONLY` 与 `MAX_EXECUTION_TIME`。结果在工具渲染前按行数、列数和序列化字节数限制。凭据只从插件配置读取，绝不打印或写入日志。
+
+当 `ssl: true` 时，默认校验证书（`sslRejectUnauthorized: true`）。只有在明确受信任的自签名部署中才应设置 `sslRejectUnauthorized: false`。
 
 ## 工具
 
 | 工具 | 说明 |
 |---|---|
-| `sql_query` | 执行只读 SQL 查询，以 JSON 返回行数据（超出 `maxRows` 截断；可选 `limit` 1-1000） |
+| `sql_query` | 执行只读 SQL 查询，以 JSON 返回行数据（按 `maxRows`、`maxColumns`、`maxBytes` 限制；可选 `limit` 1-1000） |
 | `sql_list_tables` | 列出表（PostgreSQL：public schema；MySQL：当前数据库） |
 | `sql_describe_table` | 查看表结构（列名/类型/可空/默认值） |
 | `sql_explain` | 查看只读语句的执行计划（自动补 `EXPLAIN` 前缀） |

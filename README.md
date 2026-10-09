@@ -45,19 +45,24 @@ Load the plugin in a dsh composition config (`cordis.yml`):
     password: 'dbpass'
     database: 'appdb'
     maxRows: 100            # optional, max rows per query (default 100)
+    maxColumns: 100         # optional, max columns per query (default 100)
+    maxBytes: 1048576       # optional, max serialized result bytes (default 1 MiB)
     timeoutMs: 15000        # optional, query timeout in ms (default 15000)
     ssl: false              # optional, enable TLS
+    # sslRejectUnauthorized: true # optional; defaults to true when TLS is enabled
 ```
 
 Full example: [examples/cordis.yml](examples/cordis.yml).
 
-> Security: the plugin enforces read-only by default. Only `SELECT`/`EXPLAIN`/`SHOW`/`DESCRIBE`/`WITH`/`PRAGMA`/`VALUES` statements are allowed; write keywords (INSERT/UPDATE/DELETE/DDL...) are rejected. Credentials are read from plugin config only and are never printed or logged.
+> Security: the plugin enforces read-only at two layers. Only `SELECT`/`EXPLAIN`/`SHOW`/`DESCRIBE`/`WITH`/`PRAGMA`/`VALUES` statements are allowed; multiple statements, DML/DDL, transaction/session control, locking clauses, file I/O, external execution, sequence mutation, and dangerous PostgreSQL/MySQL functions are rejected before the driver runs. PostgreSQL sessions set `default_transaction_read_only` and `statement_timeout`; MySQL sessions set `TRANSACTION READ ONLY` and `MAX_EXECUTION_TIME`. Results are bounded in the client by rows, columns, and serialized bytes before tools render them. Credentials are read from plugin config only and are never printed or logged.
+
+When `ssl: true`, certificate verification is enabled by default (`sslRejectUnauthorized: true`). Set `sslRejectUnauthorized: false` only for an explicitly trusted self-signed deployment.
 
 ## Tools
 
 | Tool | Description |
 |---|---|
-| `sql_query` | Run a read-only SQL query, returns rows as JSON (truncated to `maxRows`; optional `limit` 1-1000) |
+| `sql_query` | Run a read-only SQL query, returns rows as JSON (bounded by `maxRows`, `maxColumns`, and `maxBytes`; optional `limit` 1-1000) |
 | `sql_list_tables` | List tables (PostgreSQL: `public` schema; MySQL: current database) |
 | `sql_describe_table` | Describe a table's columns (name, type, nullable, default) |
 | `sql_explain` | Show the execution plan of a read-only statement (auto-prefixes `EXPLAIN`) |

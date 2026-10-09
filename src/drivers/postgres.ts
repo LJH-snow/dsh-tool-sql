@@ -1,18 +1,32 @@
 import type { Driver, DbConfig, ColumnInfo, IndexInfo, DatabaseInfo, TableStat, ColumnMatch, ViewInfo, TableSize, SchemaInfo, FunctionInfo, TriggerInfo, ForeignKeyInfo, SchemaDump, ExtensionInfo, SequenceInfo, ConstraintInfo, DatabaseItem, RoleInfo, GrantInfo, MaterializedViewInfo, PartitionInfo, TableRowCount, TableMatch, DatabaseSize, TableSizeItem, TableCommentInfo, ColumnStats, FunctionSourceInfo, EnumTypeInfo, TableHealth, ActiveQueryInfo, RoutineMatchInfo, IndexMatchInfo, IndexUsageInfo, LockInfo, TableAccessInfo, ViewDefinitionMatchInfo, RoutineDefinitionMatchInfo, TriggerDefinitionMatchInfo, ConstraintDefinitionMatchInfo, TableDefinitionMatchInfo, DependencyReference, TableDependenciesInfo, ViewDependenciesInfo, RoutineDependenciesInfo, RoutineReferencesInfo, RoutineReferenceInfo, TriggerDependenciesInfo } from '../client.js'
-import { SqlError, assertSafeIdentifier } from '../client.js'
+import { SqlError, assertReadOnly, assertSafeIdentifier } from '../client.js'
 
 export async function createPostgresDriver(config: DbConfig): Promise<Driver> {
   const pg = await import('pg')
+  const timeoutMs = Number.isFinite(config.timeoutMs) && (config.timeoutMs ?? 0) > 0
+    ? Math.max(1, Math.floor(config.timeoutMs as number))
+    : 15_000
+  const connectTimeoutMs = Number.isFinite(config.connectTimeoutMs) && (config.connectTimeoutMs ?? 0) > 0
+    ? Math.max(1, Math.floor(config.connectTimeoutMs as number))
+    : 10_000
   const client = new pg.Client({
     host: config.host,
     port: config.port ?? 5432,
     user: config.user,
     password: config.password,
     database: config.database,
-    connectionTimeoutMillis: config.connectTimeoutMs ?? 10_000,
-    ssl: config.ssl ? { rejectUnauthorized: false } : undefined,
+    connectionTimeoutMillis: connectTimeoutMs,
+    statement_timeout: timeoutMs,
+    query_timeout: timeoutMs,
+    ssl: config.ssl ? { rejectUnauthorized: config.sslRejectUnauthorized ?? true } : undefined,
   })
   await client.connect()
+  // Apply read-only and timeout defaults at the session boundary. The query
+  // validator remains the first line of defense, while these settings also
+  // protect catalog and helper queries issued by this driver.
+  await client.query('SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY')
+  await client.query('SET SESSION default_transaction_read_only = on')
+  await client.query(`SET SESSION statement_timeout = ${timeoutMs}`)
 
   async function createSchema(table: string): Promise<SchemaInfo> {
     const result = await client.query<{
@@ -107,6 +121,8 @@ export async function createPostgresDriver(config: DbConfig): Promise<Driver> {
 
   return {
     async query(sql, signal) {
+      assertReadOnly(sql)
+      if (signal?.aborted) throw new SqlError('Query was cancelled before it started.', 'timeout')
       const result = await client.query(sql)
       const columns = result.fields?.map(f => f.name) ?? []
       return { columns, rows: result.rows as Array<Record<string, unknown>> }

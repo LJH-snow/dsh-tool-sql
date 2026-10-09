@@ -17,7 +17,13 @@
     database: 'appdb'
     # 单次查询最大返回行数（可选，默认 100）
     # maxRows: 100
+    # 单次查询最大返回列数（可选，默认 100）
+    # maxColumns: 100
+    # 序列化结果最大字节数（可选，默认 1 MiB）
+    # maxBytes: 1048576
     # 查询超时（毫秒，可选，默认 15000）
     # timeoutMs: 15000
     # 启用 TLS（可选，默认 false）
     # ssl: false
+    # TLS 默认校验证书；仅受信任的自签名部署可显式关闭
+    # sslRejectUnauthorized: true

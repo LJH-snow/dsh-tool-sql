@@ -13,6 +13,12 @@ export interface DbConfig {
   timeoutMs?: number
   /** Max rows returned (default 100). */
   maxRows?: number
+  /** Max columns returned per query (default 100). */
+  maxColumns?: number
+  /** Max serialized query result bytes (default 1 MiB). */
+  maxBytes?: number
+  /** Verify the database certificate when TLS is enabled (default true). */
+  sslRejectUnauthorized?: boolean
   ssl?: boolean
 }
 
@@ -438,17 +444,140 @@ export class SqlError extends Error {
 }
 
 const READ_ONLY_PREFIXES = ['select', 'explain', 'show', 'describe', 'desc', 'with', 'pragma', 'values']
-const WRITE_KEYWORDS = /\b(insert|update|delete|drop|alter|create|truncate|grant|revoke|rename|replace|merge|call|exec|copy|vacuum)\b/i
+const WRITE_KEYWORDS = /\b(insert|update|delete|drop|alter|create|truncate|grant|revoke|rename|replace|merge|call|exec|copy|vacuum|set|reset|begin|start|commit|rollback|savepoint|release|lock|unlock|load|prepare|execute|deallocate|listen|notify|handler|use|do|returning)\b/i
+const DANGEROUS_FUNCTIONS = /(?:^|[^A-Za-z0-9_$])(?:["`]?)(?:set_config|setval|nextval|currval|lastval|pg_write_file|pg_read_file|pg_read_binary_file|pg_stat_file|pg_ls_dir|pg_ls_logdir|pg_ls_waldir|pg_logdir_ls|pg_execute_server_program|pg_reload_conf|pg_rotate_logfile|pg_notify|dblink_exec|dblink_connect|dblink_connect_u|dblink_send_query|lo_import|lo_export|lo_create|pg_terminate_backend|pg_cancel_backend|pg_(?:try_)?advisory_(?:xact_)?(?:lock|unlock)(?:_shared|_all)?|pg_stat_reset(?:_shared|_single_table_counters)?|pg_log_backend_memory_contexts|pg_sleep|pg_sleep_for|pg_sleep_until|current_setting|sys_exec|sys_eval|load_file|get_lock|release_(?:all_)?locks?|sleep|benchmark|master_pos_wait|wait_for_executed_gtid_set)(?:["`]?)\s*\(/i
+const DANGEROUS_CLAUSES = /\b(?:explain\s+(?:analyze\b|\([^)]*\banalyze\b)|for\s+(?:no\s+key\s+update|key\s+share|update|share)|lock\s+in\s+share\s+mode|into\s+(?:out|dump)file|load\s+data\s+(?:local\s+)?infile|into\s+(?:(?:temporary|temp|unlogged)\s+)?(?:table\s+)?(?:"[^"\r\n]+"|`[^`\r\n]+`|[A-Za-z_][A-Za-z0-9_$]*|@))(?=\s|$)/i
+const DEFAULT_MAX_ROWS = 100
+const DEFAULT_MAX_COLUMNS = 100
+const DEFAULT_MAX_BYTES = 1024 * 1024
+
+function positiveLimit(value: number | undefined, fallback: number): number {
+  return Number.isFinite(value) && value !== undefined && value > 0 ? Math.max(1, Math.floor(value)) : fallback
+}
+
+function jsonBytes(value: unknown): number {
+  try {
+    return Buffer.byteLength(JSON.stringify(value, (_key, item: unknown) => {
+      if (typeof item === 'bigint') return item.toString()
+      return item
+    }) ?? '')
+  } catch {
+    return Buffer.byteLength(String(value))
+  }
+}
+
+function isSqlCommentStart(sql: string, index: number, hashComments: boolean): 'line' | 'block' | null {
+  if (hashComments && sql[index] === '#') return 'line'
+  if (sql[index] === '-' && sql[index + 1] === '-' && /\s/.test(sql[index + 2] ?? '')) return 'line'
+  if (sql[index] === '/' && sql[index + 1] === '*') return 'block'
+  return null
+}
+
+/** Remove comments before the first SQL token, preserving quoted values. */
+function stripLeadingSqlTrivia(sql: string): string {
+  let index = 0
+  while (index < sql.length) {
+    while (/\s/.test(sql[index] ?? '')) index += 1
+    if (sql[index] === '#' || (sql[index] === '-' && sql[index + 1] === '-' && /\s/.test(sql[index + 2] ?? ''))) {
+      const newline = sql.indexOf('\n', index + 1)
+      index = newline < 0 ? sql.length : newline + 1
+      continue
+    }
+    if (sql[index] === '/' && sql[index + 1] === '*') {
+      const end = sql.indexOf('*/', index + 2)
+      index = end < 0 ? sql.length : end + 2
+      continue
+    }
+    break
+  }
+  return sql.slice(index)
+}
+
+/** Normalize comments before checking tokens that the database parser ignores. */
+function stripSqlComments(sql: string): string {
+  return sql
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/--(?=\s)[^\r\n]*(?:\r?\n|$)/g, ' ')
+}
+
+/** Return true when a semicolon separates two executable statements. */
+function hasMultipleStatementsWithEscapes(sql: string, backslashEscapes: boolean, hashComments: boolean): boolean {
+  let quote: '\'' | '"' | '`' | null = null
+  let dollarTag: string | null = null
+  let comment: 'line' | 'block' | null = null
+  let separatorSeen = false
+  let executableTextAfterSeparator = false
+
+  for (let i = 0; i < sql.length; i += 1) {
+    const char = sql[i]
+    const next = sql[i + 1]
+
+    if (comment === 'line') {
+      if (char === '\n' || char === '\r') comment = null
+      continue
+    }
+    if (comment === 'block') {
+      if (char === '*' && next === '/') { comment = null; i += 1 }
+      continue
+    }
+    if (dollarTag) {
+      if (sql.startsWith(dollarTag, i)) { i += dollarTag.length - 1; dollarTag = null }
+      continue
+    }
+    if (quote) {
+      if (backslashEscapes && char === '\\') { i += 1; continue }
+      if (char === quote) {
+        if (next === quote) { i += 1; continue }
+        quote = null
+      }
+      continue
+    }
+
+    const commentStart = isSqlCommentStart(sql, i, hashComments)
+    if (commentStart) { comment = commentStart; if (commentStart === 'block') i += 1; continue }
+    if (char === '\'' || char === '"' || char === '`') { quote = char; continue }
+    if (char === '$') {
+      const tag = /^\$[A-Za-z_][A-Za-z0-9_]*\$|^\$\$/.exec(sql.slice(i))?.[0]
+      if (tag) { dollarTag = tag; i += tag.length - 1; continue }
+    }
+    if (char === ';') {
+      if (separatorSeen) return true
+      separatorSeen = true
+      executableTextAfterSeparator = false
+      continue
+    }
+    if (separatorSeen && !/\s/.test(char)) executableTextAfterSeparator = true
+  }
+  return executableTextAfterSeparator
+}
+
+/**
+ * Parse both PostgreSQL standard-conforming strings and MySQL backslash
+ * strings. If either interpretation sees a second executable statement, deny
+ * the query rather than letting a dialect mismatch bypass the guard.
+ */
+function hasMultipleStatements(sql: string): boolean {
+  return [true, false].some(backslashEscapes => [true, false].some(hashComments =>
+    hasMultipleStatementsWithEscapes(sql, backslashEscapes, hashComments)))
+}
 
 export function assertReadOnly(sql: string): void {
-  const trimmed = sql.trim().replace(/[;(\s]+$/, '')
+  const trimmed = sql.trim().replace(/[;\s]+$/, '')
   if (!trimmed) throw new SqlError('Empty SQL statement.', 'denied')
-  const firstWord = trimmed.split(/\s+/)[0]?.toLowerCase() ?? ''
+  if (hasMultipleStatements(sql)) {
+    throw new SqlError('Multiple SQL statements are not allowed.', 'denied')
+  }
+  const firstWord = stripLeadingSqlTrivia(trimmed).split(/\s+/)[0]?.toLowerCase() ?? ''
   if (!READ_ONLY_PREFIXES.includes(firstWord)) {
     throw new SqlError(`Statement not allowed: "${firstWord}". Only read-only queries are permitted.`, 'denied')
   }
   if (WRITE_KEYWORDS.test(trimmed)) {
     throw new SqlError('Statement contains write keywords (INSERT/UPDATE/DELETE/DDL). Read-only mode is enforced.', 'denied')
+  }
+  const normalized = stripSqlComments(trimmed)
+  const withoutQuotedText = normalized.replace(/'(?:''|\\.|[^'])*'|"(?:""|[^"])*"/g, ' ')
+  if (DANGEROUS_FUNCTIONS.test(normalized) || DANGEROUS_CLAUSES.test(normalized) || /\binto\b/i.test(withoutQuotedText)) {
+    throw new SqlError('Statement contains a function or clause that can mutate, lock, access files, or execute external work.', 'denied')
   }
 }
 
@@ -456,6 +585,8 @@ export class DbClient {
   private readonly config: DbConfig
   private readonly driver: Driver | null
   private readonly maxRows: number
+  private readonly maxColumns: number
+  private readonly maxBytes: number
   private readonly timeoutMs: number
   /** Database type as configured ('postgres' | 'mysql'). */
   readonly databaseType: DbConfig['type']
@@ -463,8 +594,10 @@ export class DbClient {
   constructor(config: DbConfig, driver?: Driver) {
     this.config = config
     this.driver = driver ?? null
-    this.maxRows = config.maxRows ?? 100
-    this.timeoutMs = config.timeoutMs ?? 15_000
+    this.maxRows = positiveLimit(config.maxRows, DEFAULT_MAX_ROWS)
+    this.maxColumns = positiveLimit(config.maxColumns, DEFAULT_MAX_COLUMNS)
+    this.maxBytes = positiveLimit(config.maxBytes, DEFAULT_MAX_BYTES)
+    this.timeoutMs = positiveLimit(config.timeoutMs, 15_000)
     this.databaseType = config.type
   }
 
@@ -492,11 +625,33 @@ export class DbClient {
     const maxRows = maxRowsOverride === undefined ? this.maxRows : Math.min(maxRowsOverride, this.maxRows)
     try {
       const result = await driver.query(sql, this.combinedSignal(signal))
-      const truncated = result.rows.length > maxRows
+      const sourceColumns = result.columns.length > 0 ? result.columns : Object.keys(result.rows[0] ?? {})
+      const columns = sourceColumns.slice(0, this.maxColumns)
+      const truncatedByColumns = sourceColumns.length > columns.length
+      const rows: Array<Record<string, unknown>> = []
+      const rowCount = result.rows.length
+      let truncatedByBytes = false
+      // Include the complete tool envelope in the budget so renderers and
+      // transport serialization cannot exceed maxBytes after this layer.
+      const base = { columns, rows, rowCount, truncated: true }
+      while (jsonBytes(base) > this.maxBytes && columns.length > 0) columns.pop()
+      for (const sourceRow of result.rows.slice(0, maxRows)) {
+        const row: Record<string, unknown> = {}
+        for (const column of columns) {
+          if (Object.prototype.hasOwnProperty.call(sourceRow, column)) row[column] = sourceRow[column]
+        }
+        rows.push(row)
+        if (jsonBytes(base) > this.maxBytes) {
+          rows.pop()
+          truncatedByBytes = true
+          break
+        }
+      }
+      const truncated = rowCount > maxRows || truncatedByColumns || truncatedByBytes || rows.length < Math.min(rowCount, maxRows)
       return {
-        columns: result.columns,
-        rows: truncated ? result.rows.slice(0, maxRows) : result.rows,
-        rowCount: result.rows.length,
+        columns,
+        rows,
+        rowCount,
         truncated,
       }
     } catch (error) {
@@ -698,12 +853,31 @@ export class DbClient {
     const driver = await this.getDriver()
     try {
       const result = await driver.previewTable(table, limit, this.combinedSignal(signal))
-      const truncated = result.rows.length > limit
+      const maxRows = Math.min(positiveLimit(limit, 1), this.maxRows)
+      const sourceColumns = result.columns.length > 0 ? result.columns : Object.keys(result.rows[0] ?? {})
+      const columns = sourceColumns.slice(0, this.maxColumns)
+      const rows: Array<Record<string, unknown>> = []
+      const rowCount = result.rows.length
+      let truncatedByBytes = false
+      const base = { columns, rows, rowCount, truncated: true }
+      while (jsonBytes(base) > this.maxBytes && columns.length > 0) columns.pop()
+      for (const sourceRow of result.rows.slice(0, maxRows)) {
+        const row: Record<string, unknown> = {}
+        for (const column of columns) {
+          if (Object.prototype.hasOwnProperty.call(sourceRow, column)) row[column] = sourceRow[column]
+        }
+        rows.push(row)
+        if (jsonBytes(base) > this.maxBytes) {
+          rows.pop()
+          truncatedByBytes = true
+          break
+        }
+      }
       return {
-        columns: result.columns,
-        rows: truncated ? result.rows.slice(0, limit) : result.rows,
-        rowCount: result.rows.length,
-        truncated,
+        columns,
+        rows,
+        rowCount,
+        truncated: rowCount > maxRows || sourceColumns.length > columns.length || truncatedByBytes || rows.length < Math.min(rowCount, maxRows),
       }
     } catch (error) {
       if (error instanceof SqlError) throw error
