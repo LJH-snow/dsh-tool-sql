@@ -1,17 +1,29 @@
 import type { Driver, DbConfig, ColumnInfo, IndexInfo, DatabaseInfo, TableStat, ColumnMatch, ViewInfo, TableSize, SchemaInfo, FunctionInfo, TriggerInfo, ForeignKeyInfo, SchemaDump, ExtensionInfo, SequenceInfo, ConstraintInfo, DatabaseItem, RoleInfo, GrantInfo, MaterializedViewInfo, PartitionInfo, TableRowCount, TableMatch, DatabaseSize, TableSizeItem, TableCommentInfo, ColumnStats, FunctionSourceInfo, EnumTypeInfo, TableHealth, ActiveQueryInfo, RoutineMatchInfo, IndexMatchInfo, IndexUsageInfo, LockInfo, TableAccessInfo, ViewDefinitionMatchInfo, RoutineDefinitionMatchInfo, TriggerDefinitionMatchInfo, ConstraintDefinitionMatchInfo, TableDefinitionMatchInfo, DependencyReference, TableDependenciesInfo, ViewDependenciesInfo, RoutineDependenciesInfo, RoutineReferencesInfo, RoutineReferenceInfo, TriggerDependenciesInfo } from '../client.js'
-import { assertSafeIdentifier } from '../client.js'
+import { SqlError, assertReadOnly, assertSafeIdentifier } from '../client.js'
 
 export async function createMysqlDriver(config: DbConfig): Promise<Driver> {
   const mysql = await import('mysql2/promise')
+  const timeoutMs = Number.isFinite(config.timeoutMs) && (config.timeoutMs ?? 0) > 0
+    ? Math.max(1, Math.floor(config.timeoutMs as number))
+    : 15_000
+  const connectTimeoutMs = Number.isFinite(config.connectTimeoutMs) && (config.connectTimeoutMs ?? 0) > 0
+    ? Math.max(1, Math.floor(config.connectTimeoutMs as number))
+    : 10_000
   const conn = await mysql.createConnection({
     host: config.host,
     port: config.port ?? 3306,
     user: config.user,
     password: config.password,
     database: config.database,
-    connectTimeout: config.connectTimeoutMs ?? 10_000,
-    ssl: config.ssl ? {} : undefined,
+    connectTimeout: connectTimeoutMs,
+    ssl: config.ssl ? { rejectUnauthorized: config.sslRejectUnauthorized ?? true } : undefined,
   })
+  // MySQL applies the transaction mode to each subsequent transaction,
+  // including the implicit transaction used by autocommit SELECT statements.
+  // MAX_EXECUTION_TIME is enforced by the server and keeps the connection
+  // reusable after a slow read, unlike mysql2's client-side inactivity timer.
+  await conn.query('SET SESSION TRANSACTION READ ONLY')
+  await conn.query(`SET SESSION MAX_EXECUTION_TIME = ${timeoutMs}`)
 
   async function getSchemaFor(table: string): Promise<SchemaInfo> {
     const [rows] = await conn.query('SHOW CREATE TABLE `' + table.replace(/`/g, '``') + '`')
@@ -56,7 +68,9 @@ export async function createMysqlDriver(config: DbConfig): Promise<Driver> {
   }
 
   return {
-    async query(sql) {
+    async query(sql, signal) {
+      assertReadOnly(sql)
+      if (signal?.aborted) throw new SqlError('Query was cancelled before it started.', 'timeout')
       const [rows, fields] = await conn.query(sql)
       const columns = (fields as Array<{ name: string }> | undefined)?.map(f => f.name) ?? []
       return { columns, rows: rows as Array<Record<string, unknown>> }

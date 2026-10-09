@@ -26,8 +26,14 @@ export interface SqlPluginConfig {
   timeoutMs?: number
   /** Max rows returned per query (default 100). */
   maxRows?: number
+  /** Max columns returned per query (default 100). */
+  maxColumns?: number
+  /** Max serialized query result bytes (default 1 MiB). */
+  maxBytes?: number
   /** Enable TLS for the connection (default false). */
   ssl?: boolean
+  /** Verify the database certificate when TLS is enabled (default true). */
+  sslRejectUnauthorized?: boolean
 }
 
 export function apply(ctx: Context, config: SqlPluginConfig) {
@@ -43,7 +49,7 @@ export function createTools(client: DbClient) {
     defineTool({
       name: 'sql_query',
       description:
-        'Run a read-only SQL query against the configured database (PostgreSQL or MySQL). Only SELECT/EXPLAIN/SHOW/DESCRIBE/WITH statements are allowed; write statements are rejected. Returns up to maxRows (default 100) rows.',
+        'Run a read-only SQL query against the configured database (PostgreSQL or MySQL). Multiple statements, writes, dangerous functions, locking, and file/external execution clauses are rejected. Results are bounded by maxRows (default 100), maxColumns (default 100), and maxBytes (default 1 MiB).',
       parameters: {
         sql: { type: 'string', required: true, description: 'Read-only SQL statement, e.g. SELECT * FROM users LIMIT 10' },
         limit: { type: 'integer', description: 'Maximum rows to return, 1-1000 (default: plugin maxRows)' },
